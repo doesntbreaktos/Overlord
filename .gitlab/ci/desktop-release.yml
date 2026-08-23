@@ -3,7 +3,7 @@ desktop-build-windows:
   tags:
     - saas-windows-medium-amd64
   rules:
-    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
       changes:
         - Overlord-Desktop/package.json
         - Overlord-Desktop/bun.lock
@@ -59,7 +59,7 @@ desktop-release:
     - job: desktop-build-windows
       artifacts: true
   rules:
-    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
       changes:
         - Overlord-Desktop/package.json
         - Overlord-Desktop/bun.lock

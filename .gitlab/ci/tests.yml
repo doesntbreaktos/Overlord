@@ -1,5 +1,7 @@
 .server-test-rules:
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $RELEASE_VERSION != ""'
+      when: never
     - changes:
         - Overlord-Server/**/*
         - Overlord-Client/cmd/agent/wire/wire_contract_generated.go
@@ -10,6 +12,8 @@
 
 .client-test-rules:
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $RELEASE_VERSION != ""'
+      when: never
     - changes:
         - Overlord-Client/**/*
         - protocol/**/*
