@@ -39,6 +39,10 @@ Thumbs.db
 .gitignore
 .gitattributes
 
+# GitLab CI metadata is not needed in container build contexts
+.gitlab/
+.gitlab-ci.yml
+
 # Build outputs (agent binaries are large; exclude them but keep pre-built DLLs)
 **/dist-clients/*.exe
 **/dist-clients/*.pdb

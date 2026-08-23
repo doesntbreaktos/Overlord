@@ -1,5 +1,6 @@
 # Build Overlord agent binaries for multiple OS/architectures
 FROM golang:1.22-bookworm AS builder
+LABEL org.opencontainers.image.source="https://gitlab.com/vxaboveground/overlord"
 
 WORKDIR /src/Overlord-Client
 
