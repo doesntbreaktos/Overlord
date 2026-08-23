@@ -33,7 +33,8 @@ container-build:
     DOCKER_TLS_CERTDIR: /certs
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    - docker buildx create --driver docker-container --use
+    - docker context create ci-builder
+    - docker buildx create ci-builder --driver docker-container --use
     - docker buildx inspect --bootstrap
   script:
     - |
@@ -84,7 +85,8 @@ container-publish:
     DOCKER_TLS_CERTDIR: /certs
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    - docker buildx create --driver docker-container --use
+    - docker context create ci-builder
+    - docker buildx create ci-builder --driver docker-container --use
     - docker buildx inspect --bootstrap
   script:
     - |
