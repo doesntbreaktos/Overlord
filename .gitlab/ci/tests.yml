@@ -1,0 +1,114 @@
+.server-test-rules:
+  rules:
+    - changes:
+        - Overlord-Server/**/*
+        - Overlord-Client/cmd/agent/wire/wire_contract_generated.go
+        - protocol/**/*
+        - scripts/generate-wire-protocol.ts
+        - .gitlab-ci.yml
+        - .gitlab/ci/tests.yml
+
+.client-test-rules:
+  rules:
+    - changes:
+        - Overlord-Client/**/*
+        - protocol/**/*
+        - scripts/generate-wire-protocol.ts
+        - go.work
+        - go.work.sum
+        - .gitlab-ci.yml
+        - .gitlab/ci/tests.yml
+
+server-tests-linux:
+  extends: .server-test-rules
+  stage: test
+  image: oven/bun:1.3.14
+  script:
+    - cd Overlord-Server
+    - bun install --frozen-lockfile
+    - bun run typecheck
+    - bun run protocol:check
+    - bun run test
+
+server-tests-macos:
+  extends: .server-test-rules
+  stage: test
+  tags:
+    - saas-macos-medium-m1
+  image: macos-15-xcode-16
+  before_script:
+    - npm install --global --prefix "$CI_PROJECT_DIR/.tools" bun@1.3.14
+    - export PATH="$CI_PROJECT_DIR/.tools/bin:$PATH"
+  script:
+    - cd Overlord-Server
+    - bun install --frozen-lockfile
+    - bun run typecheck
+    - bun run protocol:check
+    - bun run test
+
+server-tests-windows:
+  extends: .server-test-rules
+  stage: test
+  tags:
+    - saas-windows-medium-amd64
+  before_script:
+    - npm install --global --prefix "$env:CI_PROJECT_DIR\.tools" bun@1.3.14
+    - $env:PATH = "$env:CI_PROJECT_DIR\.tools;$env:PATH"
+  script:
+    - Set-Location Overlord-Server
+    - bun install --frozen-lockfile
+    - bun run typecheck
+    - bun run protocol:check
+    - bun run test
+
+server-e2e-tests:
+  extends: .server-test-rules
+  stage: test
+  image: oven/bun:1.3.14
+  script:
+    - cd Overlord-Server
+    - bun install --frozen-lockfile
+    - bunx playwright install --with-deps chromium
+    - bun run test:e2e
+
+client-tests-linux:
+  extends: .client-test-rules
+  stage: test
+  image: golang:1.26-bookworm
+  script:
+    - cd Overlord-Client
+    - go mod download
+    - go test ./...
+
+client-tests-macos:
+  extends: .client-test-rules
+  stage: test
+  tags:
+    - saas-macos-medium-m1
+  image: macos-15-xcode-16
+  before_script:
+    - export GO_VERSION="$(awk '/^go / { print $2; exit }' Overlord-Client/go.mod)"
+    - mkdir -p "$CI_PROJECT_DIR/.toolchains"
+    - curl --fail --silent --show-error --location "https://go.dev/dl/go${GO_VERSION}.darwin-arm64.tar.gz" | tar -xz -C "$CI_PROJECT_DIR/.toolchains"
+    - export PATH="$CI_PROJECT_DIR/.toolchains/go/bin:$PATH"
+  script:
+    - cd Overlord-Client
+    - go mod download
+    - go test ./...
+
+client-tests-windows:
+  extends: .client-test-rules
+  stage: test
+  tags:
+    - saas-windows-medium-amd64
+  before_script:
+    - $GoVersion = ((Select-String -Path Overlord-Client/go.mod -Pattern '^go ').Line -split '\s+')[1]
+    - Invoke-WebRequest -UseBasicParsing "https://go.dev/dl/go$GoVersion.windows-amd64.zip" -OutFile "$env:CI_PROJECT_DIR\go.zip"
+    - Expand-Archive -Path "$env:CI_PROJECT_DIR\go.zip" -DestinationPath "$env:CI_PROJECT_DIR\.toolchains" -Force
+    - $env:PATH = "$env:CI_PROJECT_DIR\.toolchains\go\bin;$env:PATH"
+  script:
+    - bash scripts/vendor-onevpl-headers.sh
+    - bash scripts/vendor-amf-headers.sh
+    - Set-Location Overlord-Client
+    - go mod download
+    - go test ./...

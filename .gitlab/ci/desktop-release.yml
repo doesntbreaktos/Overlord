@@ -1,0 +1,88 @@
+desktop-build-windows:
+  stage: package
+  tags:
+    - saas-windows-medium-amd64
+  rules:
+    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+      changes:
+        - Overlord-Desktop/package.json
+        - Overlord-Desktop/bun.lock
+        - Overlord-Desktop/scripts/**/*
+        - Overlord-Desktop/src/**/*
+        - Overlord-Desktop/src-tauri/**/*
+  before_script:
+    - npm install --global --prefix "$env:CI_PROJECT_DIR\.tools" bun@1.3.14
+    - $env:PATH = "$env:CI_PROJECT_DIR\.tools;$env:USERPROFILE\.cargo\bin;$env:PATH"
+    - |
+      if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+        Invoke-WebRequest -UseBasicParsing https://win.rustup.rs/x86_64 -OutFile "$env:CI_PROJECT_DIR\rustup-init.exe"
+        & "$env:CI_PROJECT_DIR\rustup-init.exe" -y --profile minimal
+      }
+    - rustup toolchain install stable --profile minimal
+    - rustup default stable
+  script:
+    - Set-Location Overlord-Desktop
+    - |
+      $Version = (Get-Content package.json | ConvertFrom-Json).version
+      if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+        throw "package.json version must be strict X.Y.Z SemVer; got '$Version'"
+      }
+      $Tag = "Overlord-Desktop-v$Version"
+      if (git ls-remote --exit-code --tags origin "refs/tags/$Tag") {
+        throw "Release tag already exists: $Tag"
+      }
+      $env:DESKTOP_VERSION = $Version
+      $env:DESKTOP_TAG = $Tag
+      "DESKTOP_VERSION=$Version" | Out-File -FilePath "$env:CI_PROJECT_DIR\desktop.env" -Encoding ascii
+      "DESKTOP_TAG=$Tag" | Out-File -FilePath "$env:CI_PROJECT_DIR\desktop.env" -Encoding ascii -Append
+    - bun install --frozen-lockfile
+    - bun run vendor
+    - bun run build:win
+    - |
+      $Installer = Get-ChildItem -Path src-tauri\target\release\bundle\nsis\*.exe -ErrorAction Stop | Select-Object -First 1
+      $ReleaseDirectory = New-Item -ItemType Directory -Path "$env:CI_PROJECT_DIR\release" -Force
+      $InstallerName = "Overlord-Desktop-$env:DESKTOP_VERSION-setup.exe"
+      Copy-Item -LiteralPath $Installer.FullName -Destination (Join-Path $ReleaseDirectory $InstallerName)
+      Copy-Item -LiteralPath PLEASE_READ.txt -Destination $ReleaseDirectory
+      "INSTALLER_NAME=$InstallerName" | Out-File -FilePath "$env:CI_PROJECT_DIR\desktop.env" -Encoding ascii -Append
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - release/
+    reports:
+      dotenv: desktop.env
+
+desktop-release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  needs:
+    - job: desktop-build-windows
+      artifacts: true
+  rules:
+    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+      changes:
+        - Overlord-Desktop/package.json
+        - Overlord-Desktop/bun.lock
+        - Overlord-Desktop/scripts/**/*
+        - Overlord-Desktop/src/**/*
+        - Overlord-Desktop/src-tauri/**/*
+  script:
+    - |
+      set -eu
+      package_base="$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/overlord-desktop/$DESKTOP_VERSION"
+      curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "release/$INSTALLER_NAME" "$package_base/$INSTALLER_NAME"
+      curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file release/PLEASE_READ.txt "$package_base/PLEASE_READ.txt"
+  release:
+    tag_name: $DESKTOP_TAG
+    tag_message: "Overlord Desktop v$DESKTOP_VERSION"
+    name: "Overlord Desktop v$DESKTOP_VERSION"
+    description: "Automated build release for Overlord Desktop v$DESKTOP_VERSION"
+    ref: $CI_COMMIT_SHA
+    assets:
+      links:
+        - name: $INSTALLER_NAME
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/overlord-desktop/$DESKTOP_VERSION/$INSTALLER_NAME"
+          link_type: package
+        - name: PLEASE_READ.txt
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/overlord-desktop/$DESKTOP_VERSION/PLEASE_READ.txt"
+          link_type: other

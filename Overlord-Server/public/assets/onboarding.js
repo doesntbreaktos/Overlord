@@ -1,5 +1,5 @@
 const TELEGRAM_URL = "https://t.me/Onimai";
-const GITHUB_ISSUES_URL = "https://github.com/vxaboveground/Overlord/issues/new";
+const GITLAB_ISSUES_URL = "https://gitlab.com/vxaboveground/overlord/-/issues/new";
 
 let mounted = false;
 
@@ -90,11 +90,11 @@ export function showOnboardingIfNeeded(user) {
 
     stepContent.innerHTML = `
       <div class="account-onboarding__card">
-        <h2><i class="fa-brands fa-github" aria-hidden="true"></i> Found a bug? Use GitHub Issues</h2>
-        <p><strong>This is the official place to report bugs.</strong> Create a GitHub issue with what happened, what you expected, and any useful screenshots or logs so the problem can be tracked and fixed.</p>
+        <h2><i class="fa-brands fa-gitlab" aria-hidden="true"></i> Found a bug? Use GitLab Issues</h2>
+        <p><strong>This is the official place to report bugs.</strong> Create a GitLab issue with what happened, what you expected, and any useful screenshots or logs so the problem can be tracked and fixed.</p>
         <div class="account-onboarding__url-label">Full bug report link</div>
-        <a class="account-onboarding__url" href="${GITHUB_ISSUES_URL}" target="_blank" rel="noopener noreferrer">${GITHUB_ISSUES_URL}</a>
-        <a class="account-onboarding__open" href="${GITHUB_ISSUES_URL}" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-github" aria-hidden="true"></i> Create a GitHub issue</a>
+        <a class="account-onboarding__url" href="${GITLAB_ISSUES_URL}" target="_blank" rel="noopener noreferrer">${GITLAB_ISSUES_URL}</a>
+        <a class="account-onboarding__open" href="${GITLAB_ISSUES_URL}" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-gitlab" aria-hidden="true"></i> Create a GitLab issue</a>
       </div>
     `;
     progressText.textContent = "Step 2 of 2";

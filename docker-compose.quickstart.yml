@@ -1,6 +1,6 @@
 services:
   overlord-server:
-    image: ghcr.io/vxaboveground/overlord:latest
+    image: registry.gitlab.com/vxaboveground/overlord:latest
     build:
       context: .
       dockerfile: Dockerfile

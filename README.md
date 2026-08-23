@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vxaboveground/Overlord/refs/heads/main/Overlord-Server/public/assets/overlord.png" alt="Overlord" width="280" />
+  <img src="https://gitlab.com/vxaboveground/overlord/-/raw/main/Overlord-Server/public/assets/overlord.png" alt="Overlord" width="280" />
 </p>
 
 # Overlord
@@ -103,7 +103,7 @@ docker compose version
 **2. Get the project**
 
 ```powershell
-git clone https://github.com/vxaboveground/Overlord.git
+git clone https://gitlab.com/vxaboveground/overlord.git
 cd Overlord
 ```
 
@@ -190,14 +190,14 @@ Make a folder for it, drop in the file, and you're done:
 
 ```bash
 mkdir overlord && cd overlord
-wget https://raw.githubusercontent.com/vxaboveground/Overlord/refs/heads/main/docker-compose.yml
+wget https://gitlab.com/vxaboveground/overlord/-/raw/main/docker-compose.yml
 ```
 
 No `wget`? Use `curl`:
 
 ```bash
 mkdir overlord && cd overlord
-curl -O https://raw.githubusercontent.com/vxaboveground/Overlord/refs/heads/main/docker-compose.yml
+curl -O https://gitlab.com/vxaboveground/overlord/-/raw/main/docker-compose.yml
 ```
 
 **3. Start it**
@@ -206,7 +206,7 @@ curl -O https://raw.githubusercontent.com/vxaboveground/Overlord/refs/heads/main
 docker compose up -d
 ```
 
-The image is pulled automatically from `ghcr.io/vxaboveground/overlord:latest` on first run.
+The image is pulled automatically from `registry.gitlab.com/vxaboveground/overlord:latest` on first run.
 
 **4. Open the panel**
 
@@ -266,7 +266,7 @@ docker compose version
 **2. Get the project**
 
 ```bash
-git clone https://github.com/vxaboveground/Overlord.git
+git clone https://gitlab.com/vxaboveground/overlord.git
 cd Overlord
 ```
 
