@@ -1,5 +1,5 @@
 const TELEGRAM_URL = "https://t.me/Onimai";
-const GITLAB_ISSUES_URL = "https://gitlab.com/vxaboveground/overlord/-/issues/new";
+const GITEA_ISSUES_URL = "https://overlord.kyun.li/vxaboveground/overlord/issues/new";
 
 let mounted = false;
 
@@ -90,11 +90,11 @@ export function showOnboardingIfNeeded(user) {
 
     stepContent.innerHTML = `
       <div class="account-onboarding__card">
-        <h2><i class="fa-brands fa-gitlab" aria-hidden="true"></i> Found a bug? Use GitLab Issues</h2>
-        <p><strong>This is the official place to report bugs.</strong> Create a GitLab issue with what happened, what you expected, and any useful screenshots or logs so the problem can be tracked and fixed.</p>
+        <h2><i class="fa-solid fa-code-branch" aria-hidden="true"></i> Found a bug? Use Gitea Issues</h2>
+        <p><strong>This is the official place to report bugs.</strong> Create a Gitea issue with what happened, what you expected, and any useful screenshots or logs so the problem can be tracked and fixed.</p>
         <div class="account-onboarding__url-label">Full bug report link</div>
-        <a class="account-onboarding__url" href="${GITLAB_ISSUES_URL}" target="_blank" rel="noopener noreferrer">${GITLAB_ISSUES_URL}</a>
-        <a class="account-onboarding__open" href="${GITLAB_ISSUES_URL}" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-gitlab" aria-hidden="true"></i> Create a GitLab issue</a>
+        <a class="account-onboarding__url" href="${GITEA_ISSUES_URL}" target="_blank" rel="noopener noreferrer">${GITEA_ISSUES_URL}</a>
+        <a class="account-onboarding__open" href="${GITEA_ISSUES_URL}" target="_blank" rel="noopener noreferrer"><i class="fa-solid fa-code-branch" aria-hidden="true"></i> Create a Gitea issue</a>
       </div>
     `;
     progressText.textContent = "Step 2 of 2";

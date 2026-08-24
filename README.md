@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://gitlab.com/vxaboveground/overlord/-/raw/main/Overlord-Server/public/assets/overlord.png" alt="Overlord" width="280" />
+  <img src="https://overlord.kyun.li/vxaboveground/overlord/raw/branch/main/Overlord-Server/public/assets/overlord.png" alt="Overlord" width="280" />
 </p>
 
 # Overlord
@@ -7,6 +7,8 @@
 # [TELEGRAM SERVER JOIN NOW NO EXCUSES WE GIVE SUPPORT AND IT'S FUN](https://t.me/Onimai)
 
 Hello, I made this project for fun.
+
+The canonical repository is [Gitea](https://overlord.kyun.li/vxaboveground/overlord); GitLab is maintained as a mirror and release-registry host.
 
 The server is TypeScript on Node/Bun. The client is Go. Operators talk to the server through a web panel or the Electron desktop app, and agents connect over encrypted WebSockets.
 
@@ -103,7 +105,7 @@ docker compose version
 **2. Get the project**
 
 ```powershell
-git clone https://gitlab.com/vxaboveground/overlord.git
+git clone https://overlord.kyun.li/vxaboveground/overlord.git
 cd Overlord
 ```
 
@@ -190,14 +192,14 @@ Make a folder for it, drop in the file, and you're done:
 
 ```bash
 mkdir overlord && cd overlord
-wget https://gitlab.com/vxaboveground/overlord/-/raw/main/docker-compose.yml
+wget https://overlord.kyun.li/vxaboveground/overlord/raw/branch/main/docker-compose.yml
 ```
 
 No `wget`? Use `curl`:
 
 ```bash
 mkdir overlord && cd overlord
-curl -O https://gitlab.com/vxaboveground/overlord/-/raw/main/docker-compose.yml
+curl -O https://overlord.kyun.li/vxaboveground/overlord/raw/branch/main/docker-compose.yml
 ```
 
 **3. Start it**
@@ -206,7 +208,8 @@ curl -O https://gitlab.com/vxaboveground/overlord/-/raw/main/docker-compose.yml
 docker compose up -d
 ```
 
-The image is pulled automatically from `registry.gitlab.com/vxaboveground/overlord:latest` on first run.
+The image is currently pulled from the GitLab mirror's container registry at
+`registry.gitlab.com/vxaboveground/overlord:latest` on first run.
 
 **4. Open the panel**
 
@@ -266,7 +269,7 @@ docker compose version
 **2. Get the project**
 
 ```bash
-git clone https://gitlab.com/vxaboveground/overlord.git
+git clone https://overlord.kyun.li/vxaboveground/overlord.git
 cd Overlord
 ```
 

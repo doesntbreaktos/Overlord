@@ -22,6 +22,7 @@ type AgentCommand = {
 class TransferTestAgent {
   private socket: WebSocket | null = null;
   private downloads = new Map<string, Uint8Array>();
+  clientId = CLIENT_ID;
 
   setDownload(path: string, bytes: Uint8Array): void {
     this.downloads.set(path, bytes);
@@ -76,6 +77,12 @@ class TransferTestAgent {
           return;
         }
         if (message.type === "hello_ack") {
+          if (typeof message.id !== "string" || !message.id) {
+            clearTimeout(timeout);
+            reject(new Error("Agent hello acknowledgement did not include a client ID"));
+            return;
+          }
+          this.clientId = message.id;
           clearTimeout(timeout);
           resolve();
           return;
@@ -163,7 +170,7 @@ test.describe("file transfer HTTP API runtime", () => {
 
     const requestUpload = await api.post("/api/file/upload/request", {
       data: {
-        clientId: CLIENT_ID,
+        clientId: agent.clientId,
         path: remotePath,
         fileName: "overlord-e2e-upload.bin",
       },
@@ -185,7 +192,7 @@ test.describe("file transfer HTTP API runtime", () => {
 
     const pullHeaders = {
       "x-agent-token": AGENT_TOKEN,
-      "x-overlord-client-id": CLIENT_ID,
+      "x-overlord-client-id": agent.clientId,
     };
     const pull = await api.get(staged.pullUrl, { headers: pullHeaders });
     expect(pull.ok()).toBeTruthy();
@@ -204,7 +211,7 @@ test.describe("file transfer HTTP API runtime", () => {
     agent.setDownload(remotePath, downloadBytes);
 
     const requestDownload = await api.post("/api/file/download/request", {
-      data: { clientId: CLIENT_ID, path: remotePath },
+      data: { clientId: agent.clientId, path: remotePath },
     });
     expect(requestDownload.ok()).toBeTruthy();
     const { downloadUrl } = await requestDownload.json();

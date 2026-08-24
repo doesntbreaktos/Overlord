@@ -113,6 +113,8 @@ export default async function globalSetup(_config: FullConfig) {
       HOST: "127.0.0.1",
       PORT: String(PORT),
       OVERLORD_TLS_OFFLOAD: "true",
+      OVERLORD_PUBLIC_ORIGIN: BASE_URL,
+      OVERLORD_WS_UPGRADE_RATE_MAX: "1000",
       OVERLORD_USER: "e2e-admin",
       OVERLORD_PASS: "E2ePassword!2026",
       JWT_SECRET: "e2e-jwt-secret-that-is-only-used-for-browser-tests",

@@ -39,7 +39,8 @@ Thumbs.db
 .gitignore
 .gitattributes
 
-# GitLab CI metadata is not needed in container build contexts
+# CI metadata is not needed in container build contexts
+.gitea/
 .gitlab/
 .gitlab-ci.yml
 

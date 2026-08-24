@@ -32,6 +32,9 @@ config.json
 .env
 .docker-cache/
 
+# Local Gitea Actions runner deployment
+/deploy/gitea-runner/
+
 # Go
 bin/
 *.exe

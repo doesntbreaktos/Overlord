@@ -49,7 +49,7 @@ bun run build:linux    # Linux AppImage
 
 Or from the repo root: `./scripts/build-desktop.sh` (or `scripts\build-desktop.bat` on Windows) picks the right target for the current OS.
 
-Output lands in `src-tauri/target/release/bundle/`. The CI workflow in `.gitlab/ci/desktop-release.yml` builds the Windows NSIS installer on every push to `main` that changes the desktop application or its build inputs, and publishes it as a GitLab Release tagged `Overlord-Desktop-v<version>`.
+Output lands in `src-tauri/target/release/bundle/`. The GitLab mirror's CI workflow in `.gitlab/ci/desktop-release.yml` builds the Windows NSIS installer on every mirrored push to `main` that changes the desktop application or its build inputs, and publishes it as a GitLab Release tagged `Overlord-Desktop-v<version>`.
 
 ## Configuration
 
