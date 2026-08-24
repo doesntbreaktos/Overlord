@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 function envFlagEnabled(name: string): boolean {
   const v = String(process.env[name] || "").trim().toLowerCase();
   return v === "1" || v === "true" || v === "yes" || v === "on";
@@ -17,41 +19,11 @@ export function resetTrustProxyCacheForTests(): void {
 }
 
 function isIPv4(ip: string): boolean {
-  const parts = ip.split(".");
-  if (parts.length !== 4) return false;
-  for (const p of parts) {
-    if (!/^\d{1,3}$/.test(p)) return false;
-    const n = Number(p);
-    if (n < 0 || n > 255) return false;
-  }
-  return true;
+  return isIP(ip) === 4;
 }
 
 function isIPv6(ip: string): boolean {
-  return ip.includes(":") && /^[0-9a-fA-F:.]+$/.test(ip);
-}
-
-function isPrivateIPv4(ip: string): boolean {
-  const [a, b] = ip.split(".").map(Number);
-  if (a === 10) return true;
-  if (a === 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  return false;
-}
-
-function isPrivateIPv6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  if (lower === "::1") return true;
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
-  if (lower.startsWith("fe80:")) return true;
-  if (lower.startsWith("::ffff:")) {
-    const v4 = lower.slice("::ffff:".length);
-    return isIPv4(v4) && isPrivateIPv4(v4);
-  }
-  return false;
+  return isIP(ip) === 6;
 }
 
 function stripIPv6Brackets(ip: string): string {
@@ -74,37 +46,57 @@ function normalizeCandidate(raw: string): string {
   return stripIPv6Brackets(stripPort(raw.trim()));
 }
 
-function isPrivateOrInvalid(ip: string): boolean {
-  if (!ip) return true;
-  if (isIPv4(ip)) return isPrivateIPv4(ip);
-  if (isIPv6(ip)) return isPrivateIPv6(ip);
-  return true;
+function isValidIp(ip: string): boolean {
+  return isIPv4(ip) || isIPv6(ip);
+}
+
+function isLoopbackIp(ip: string): boolean {
+  if (isIPv4(ip)) return Number(ip.split(".")[0]) === 127;
+  if (!isIPv6(ip)) return false;
+  const lower = ip.toLowerCase();
+  if (lower === "::1") return true;
+  const dottedMapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (dottedMapped) return Number(dottedMapped[1].split(".")[0]) === 127;
+  const hexMapped = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  return !!hexMapped && (Number.parseInt(hexMapped[1], 16) >> 8) === 127;
+}
+
+function isTrustedImmediateProxy(peer: string): boolean {
+  const normalized = normalizeCandidate(peer);
+  if (!isValidIp(normalized)) return false;
+  if (isLoopbackIp(normalized)) return true;
+  const configured = String(process.env.OVERLORD_TRUSTED_PROXY_IPS || "")
+    .split(",")
+    .map(normalizeCandidate)
+    .filter(Boolean);
+  return configured.includes(normalized);
 }
 
 export function resolveForwardedIp(req: Request, fallback: string): string {
   if (!isTrustProxyEnabled()) return fallback;
+  if (!isTrustedImmediateProxy(fallback)) return fallback;
 
   const xff = req.headers.get("x-forwarded-for");
   if (xff) {
     const parts = xff
       .split(",")
       .map((s) => normalizeCandidate(s))
-      .filter(Boolean);
-    const publicHop = parts.find((p) => !isPrivateOrInvalid(p));
-    if (publicHop) return publicHop;
-    if (parts.length > 0) return parts[0];
+      .filter(isValidIp);
+    // A conforming edge proxy appends the actual peer address. Selecting from
+    // the right prevents an attacker from choosing a spoofed leftmost value.
+    if (parts.length > 0) return parts[parts.length - 1];
   }
 
   const xri = req.headers.get("x-real-ip");
   if (xri) {
     const normalized = normalizeCandidate(xri);
-    if (normalized) return normalized;
+    if (isValidIp(normalized)) return normalized;
   }
 
   const cfConnecting = req.headers.get("cf-connecting-ip");
   if (cfConnecting) {
     const normalized = normalizeCandidate(cfConnecting);
-    if (normalized) return normalized;
+    if (isValidIp(normalized)) return normalized;
   }
 
   return fallback;

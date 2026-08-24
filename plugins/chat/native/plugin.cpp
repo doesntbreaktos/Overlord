@@ -43,7 +43,7 @@
 #define IDC_SEND   103
 #define IDC_ATTACH 104
 
-#define MAX_ATTACHMENT_BYTES (5 * 1024 * 1024)
+#define MAX_ATTACHMENT_BYTES (64 * 1024 * 1024)
 
 static const char *WND_CLASS_NAME = "OverlordChatWnd";
 

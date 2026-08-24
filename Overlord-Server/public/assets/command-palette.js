@@ -121,9 +121,26 @@ function pushRecent(href) {
   localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX)));
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function safeClassTokens(value, fallback = "") {
+  const tokens = String(value || "")
+    .split(/\s+/)
+    .filter((token) => /^[A-Za-z0-9_-]+$/.test(token));
+  return tokens.length ? tokens.join(" ") : fallback;
+}
+
 function flagFor(country) {
-  if (!country || country.length !== 2) return "";
-  return `<span class="fi fi-${country.toLowerCase()}" style="margin-right:6px;border-radius:2px;"></span>`;
+  const code = String(country || "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return "";
+  return `<span class="fi fi-${code.toLowerCase()}" style="margin-right:6px;border-radius:2px;"></span>`;
 }
 
 function clientLabel(c) {
@@ -163,15 +180,17 @@ function buildResults(query, pages, clients) {
 }
 
 function makeIcon(faClass, colorClass) {
-  return `<i class="fa-solid ${faClass} ${colorClass || "text-slate-300"}" style="width:18px;text-align:center;"></i>`;
+  const icon = safeClassTokens(faClass, "fa-circle-question");
+  const color = safeClassTokens(colorClass, "text-slate-300");
+  return `<i class="fa-solid ${icon} ${color}" style="width:18px;text-align:center;"></i>`;
 }
 
 function renderRow(r, active) {
   const activeCls = active ? "cmdp-row cmdp-row-active" : "cmdp-row";
   if (r.kind === "page") {
-    return `<div class="${activeCls}" data-href="${r.href}">
+    return `<div class="${activeCls}" data-href="${escapeHtml(r.href)}">
       ${makeIcon(r.icon, r.color)}
-      <span class="cmdp-label">${r.label}</span>
+      <span class="cmdp-label">${escapeHtml(r.label)}</span>
       <span class="cmdp-kind">page</span>
     </div>`;
   }
@@ -179,26 +198,29 @@ function renderRow(r, active) {
     const c = r.client;
     const dot = c.online ? "background:#10b981" : "background:#475569";
     const os = osBadge(c.os || "");
-    return `<div class="${activeCls}" data-client="${c.id}">
-      <i class="fa ${os.icon} cv-tone-${os.tone}" style="width:18px;text-align:center;"></i>
+    const osIcon = safeClassTokens(os.icon, "fa-solid fa-circle-question");
+    const osTone = safeClassTokens(os.tone, "pill-unknown");
+    return `<div class="${activeCls}" data-client="${escapeHtml(c.id)}">
+      <i class="fa ${osIcon} cv-tone-${osTone}" style="width:18px;text-align:center;"></i>
       <span class="cmdp-status-dot" style="${dot}"></span>
       ${flagFor(c.country)}
-      <span class="cmdp-label">${r.label}</span>
+      <span class="cmdp-label">${escapeHtml(r.label)}</span>
       <span class="cmdp-kind">${c.online ? "online" : "offline"}</span>
     </div>`;
   }
   if (r.kind === "action") {
-    return `<div class="${activeCls}" data-action="${r.action.key}">
+    return `<div class="${activeCls}" data-action="${escapeHtml(r.action.key)}">
       ${makeIcon(r.action.icon, r.action.color)}
-      <span class="cmdp-label">${r.action.label}</span>
+      <span class="cmdp-label">${escapeHtml(r.action.label)}</span>
       <span class="cmdp-kind">needs client</span>
     </div>`;
   }
   if (r.kind === "client-action") {
     const c = r.client;
-    return `<div class="${activeCls}" data-href="${r.action.href(c.id)}">
+    const encodedId = encodeURIComponent(String(c.id || ""));
+    return `<div class="${activeCls}" data-href="${escapeHtml(r.action.href(encodedId))}">
       ${makeIcon(r.action.icon, r.action.color)}
-      <span class="cmdp-label">${r.action.label} · ${clientLabel(c)}</span>
+      <span class="cmdp-label">${escapeHtml(`${r.action.label} · ${clientLabel(c)}`)}</span>
       <span class="cmdp-kind">action</span>
     </div>`;
   }
@@ -320,7 +342,7 @@ function renderList() {
   }
   let html = "";
   if (state.mode === "client-actions" && state.pendingAction) {
-    html += `<div class="cmdp-section">Pick a client for: ${state.pendingAction.label}</div>`;
+    html += `<div class="cmdp-section">Pick a client for: ${escapeHtml(state.pendingAction.label)}</div>`;
   }
   html += state.results.map((r, i) => renderRow(r, i === state.active)).join("");
   list.innerHTML = html;
@@ -336,7 +358,12 @@ function activate(idx, newTab) {
   const r = state.results[idx];
   if (!r) return;
   if (r.kind === "page" || r.kind === "client-action") {
-    navigate(r.kind === "page" ? r.href : r.action.href(r.client.id), newTab);
+    navigate(
+      r.kind === "page"
+        ? r.href
+        : r.action.href(encodeURIComponent(String(r.client.id || ""))),
+      newTab,
+    );
     return;
   }
   if (r.kind === "client") {

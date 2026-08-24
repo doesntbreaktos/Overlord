@@ -15,6 +15,7 @@ import {
 import {
   cleanupViewerP2P,
 } from "./ws-console-rd-backstage";
+import { safeSendViewerBytes } from "./ws-viewer-utils";
 
 function sendDesktopAudioCommand(
   clientId: string,
@@ -153,22 +154,20 @@ export function handleDesktopAudioViewerMessage(ws: ServerWebSocket<SocketData>,
 }
 
 export function handleDesktopAudioUplink(clientId: string, payload: any) {
+  if (typeof payload?.sessionId === "string" && payload.sessionId.length > 128) return;
   const sessionId = typeof payload?.sessionId === "string" ? payload.sessionId : "";
   const bytes = payload?.data instanceof Uint8Array
     ? payload.data
     : payload?.data instanceof ArrayBuffer
       ? new Uint8Array(payload.data)
       : ArrayBuffer.isView(payload?.data)
-        ? new Uint8Array(payload.data.buffer)
+        ? new Uint8Array(payload.data.buffer, payload.data.byteOffset, payload.data.byteLength)
         : null;
   if (!bytes || bytes.byteLength === 0) return;
 
   for (const session of sessionManager.getDesktopAudioSessionsByClient(clientId)) {
     if (sessionId && session.id !== sessionId) continue;
-    try {
-      session.viewer.send(bytes);
-    } catch {
-    }
+    safeSendViewerBytes(session.viewer, bytes, undefined, "desktop-audio");
   }
 }
 

@@ -130,6 +130,9 @@ interface TimedInternalTaskSample {
   duration: number;
 }
 
+export const MAX_HTTP_METRIC_ROUTE_KEYS = 512;
+const OVERFLOW_HTTP_METRIC_ROUTE = "OTHER high-cardinality routes";
+
 class MetricsCollector {
   private startTime: number = Date.now();
 
@@ -421,12 +424,25 @@ class MetricsCollector {
         this.httpSamples.splice(0, this.httpSamples.length - this.maxHttpLatencyHistory);
       }
 
-      const routeSamples = this.httpRouteSamples.get(route) || [];
+      let retainedRoute = route;
+      if (
+        !this.httpRouteSamples.has(retainedRoute)
+        && !this.httpRouteSamples.has(OVERFLOW_HTTP_METRIC_ROUTE)
+        && this.httpRouteSamples.size >= MAX_HTTP_METRIC_ROUTE_KEYS - 1
+      ) {
+        retainedRoute = OVERFLOW_HTTP_METRIC_ROUTE;
+      } else if (
+        !this.httpRouteSamples.has(retainedRoute)
+        && this.httpRouteSamples.size >= MAX_HTTP_METRIC_ROUTE_KEYS
+      ) {
+        retainedRoute = OVERFLOW_HTTP_METRIC_ROUTE;
+      }
+      const routeSamples = this.httpRouteSamples.get(retainedRoute) || [];
       routeSamples.push(sample);
       if (routeSamples.length > this.maxHttpRouteSamples) {
         routeSamples.splice(0, routeSamples.length - this.maxHttpRouteSamples);
       }
-      this.httpRouteSamples.set(route, routeSamples);
+      this.httpRouteSamples.set(retainedRoute, routeSamples);
     }
   }
 

@@ -33,6 +33,18 @@ func NewManager(writer wire.Writer, host HostInfo) *Manager {
 	}
 }
 
+func (m *Manager) SetClientID(clientID string) {
+	m.mu.Lock()
+	m.host.ClientID = clientID
+	m.mu.Unlock()
+}
+
+func (m *Manager) ClientID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.host.ClientID
+}
+
 func (m *Manager) Load(ctx context.Context, manifest PluginManifest, binary []byte) error {
 	//garble:controlflow block_splits=max junk_jumps=max flatten_passes=max
 	if len(binary) == 0 {
@@ -95,7 +107,10 @@ func (m *Manager) Load(ctx context.Context, manifest PluginManifest, binary []by
 		}()
 	}
 
-	hostJSON, err := json.Marshal(m.host)
+	m.mu.Lock()
+	host := m.host
+	m.mu.Unlock()
+	hostJSON, err := json.Marshal(host)
 	if err != nil {
 		np.Close()
 		return err

@@ -825,7 +825,7 @@ func HandleFileUploadHTTP(ctx context.Context, env *agentRuntime.Env, cmdID stri
 		if token := strings.TrimSpace(env.Cfg.AgentToken); token != "" {
 			req.Header.Set("x-agent-token", token)
 		}
-		if id := strings.TrimSpace(env.Cfg.ID); id != "" {
+		if id := env.ClientID(); id != "" {
 			req.Header.Set("x-overlord-client-id", id)
 		}
 		if offset > 0 {

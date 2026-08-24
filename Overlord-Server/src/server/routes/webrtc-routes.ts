@@ -3,11 +3,13 @@ import { authenticateRequest } from "../../auth";
 import { requireClientAccess, requireFeatureAccess } from "../../rbac";
 import { logger } from "../../logger";
 import { issueTurnIceServers } from "../turn-credentials";
+import { readBodyLimited, RequestBodyTooLargeError } from "../request-body";
 
 const MEDIAMTX_URL = (process.env.OVERLORD_MEDIAMTX_URL || "http://localhost:8889").replace(/\/+$/, "");
 
 
 const PUBLISH_TOKEN_TTL_MS = 60_000;
+const MAX_WEBRTC_SIGNAL_BODY_BYTES = 1024 * 1024;
 
 type PublishToken = { clientId: string; expiresAt: number };
 const publishTokens = new Map<string, PublishToken>();
@@ -149,7 +151,14 @@ export async function handleWebrtcRoutes(req: Request, url: URL): Promise<Respon
 
   let body: ArrayBuffer | undefined;
   if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "DELETE") {
-    body = await req.arrayBuffer();
+    try {
+      body = (await readBodyLimited(req, MAX_WEBRTC_SIGNAL_BODY_BYTES)).buffer;
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        return new Response("Payload Too Large", { status: 413 });
+      }
+      throw error;
+    }
   }
 
   let upstreamResp: Response;

@@ -10,7 +10,7 @@ export async function loadPluginNavItems(activeMap) {
     if (!plugins || !Array.isArray(plugins)) return;
 
     const navPlugins = plugins.filter(
-      (p) => p.navbar && p.enabled
+      (p) => p && typeof p === "object" && p.navbar && p.enabled
     );
 
     if (navPlugins.length === 0) return;
@@ -28,11 +28,17 @@ export async function loadPluginNavItems(activeMap) {
     if (!childContainer) return;
 
     const itemsHtml = navPlugins.map((p) => {
-      const linkId = `plugin-nav-${p.id}`;
-      activeMap[`/plugins/${p.id}`] = linkId;
+      const pluginId = String(p.id || "").trim();
+      if (
+        !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(pluginId) ||
+        pluginId.includes("..") ||
+        pluginId.endsWith(".")
+      ) return "";
+      const linkId = `plugin-nav-${pluginId}`;
+      activeMap[`/plugins/${pluginId}`] = linkId;
 
       const childObj = {
-        href: `/plugins/${p.id}`,
+        href: `/plugins/${pluginId}`,
         label: p.navbar.label || p.name,
         icon: p.navbar.icon || "fa-cube",
         iconColor: "text-slate-300",

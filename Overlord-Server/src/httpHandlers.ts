@@ -6,13 +6,9 @@ import { v4 as uuidv4 } from "uuid";
 import { metrics } from "./metrics";
 import { logAudit, AuditAction } from "./auditLog";
 import { sendPingRequest } from "./wsHandlers";
+import { CORS_HEADERS } from "./server/http-security";
 
 const DEFAULT_PAGE_SIZE = 12;
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
 
 export function handleClientsRequest(req: Request): Response {
   const url = new URL(req.url);

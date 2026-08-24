@@ -773,7 +773,10 @@ async function startServer() {
         (req, url, srv) => handleFileDownloadRoutes(req, url, srv as any, routeDeps.fileDownload),
         (req, url) => handleKeylogArchiveRoutes(req, url, { CORS_HEADERS }),
         (req, url) => handlePluginRoutes(req, url, routeDeps.plugin),
-        (req, url) => handleFileShareRoutes(req, url, routeDeps.fileShare),
+        (req, url, srv) => handleFileShareRoutes(req, url, {
+          ...routeDeps.fileShare,
+          requestIP: (srv as any).requestIP,
+        }),
         (req, url, srv) => handleMiscRoutes(req, url, {
           ...routeDeps.misc,
           requestIP: (srv as any).requestIP,

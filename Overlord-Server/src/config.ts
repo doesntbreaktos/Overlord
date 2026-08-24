@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { writeFile, mkdir } from "fs/promises";
 import { dirname, resolve } from "path";
 import logger from "./logger";
@@ -436,12 +436,15 @@ function loadSaveSecrets(savePath: string): SaveSecrets {
   }
 }
 
-function persistSaveSecrets(savePath: string, secrets: SaveSecrets): void {
+function persistSaveSecrets(savePath: string, secrets: SaveSecrets): boolean {
   try {
-    writeFileSync(savePath, JSON.stringify(secrets, null, 2));
+    writeFileSync(savePath, JSON.stringify(secrets, null, 2), { mode: 0o600 });
+    if (process.platform !== "win32") chmodSync(savePath, 0o600);
     logger.info(`Persisted secrets to ${savePath}`);
+    return true;
   } catch (error) {
     logger.warn("Failed to persist save.json secrets", error);
+    return false;
   }
 }
 
@@ -506,7 +509,14 @@ async function writePersistentFileConfig(fileConfig: any): Promise<void> {
     await mkdir(dirname(configPath), { recursive: true });
   } catch {}
 
-  await writeFile(configPath, JSON.stringify(fileConfig, null, 2));
+  await writeFile(configPath, JSON.stringify(fileConfig, null, 2), { mode: 0o600 });
+  if (process.platform !== "win32") chmodSync(configPath, 0o600);
+}
+
+function writePersistentFileConfigSync(fileConfig: any): void {
+  const configPath = getPersistentConfigPath();
+  writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), { mode: 0o600 });
+  if (process.platform !== "win32") chmodSync(configPath, 0o600);
 }
 
 export function loadConfig(): Config {
@@ -549,11 +559,9 @@ export function loadConfig(): Config {
 
   const passwordFromEnv = process.env.OVERLORD_PASS;
   const passwordFromConfig = fileConfig.auth?.password;
-  const passwordFromSaved = savedSecrets.auth?.bootstrapPassword;
-  let finalBootstrapPassword =
+  const finalBootstrapPassword =
     passwordFromEnv ||
     passwordFromConfig ||
-    passwordFromSaved ||
     DEFAULT_CONFIG.auth.password;
   const passwordIsUserSupplied =
     Boolean(passwordFromEnv) ||
@@ -1054,10 +1062,11 @@ thumbnails: {
 
   if (saveChanged) {
     const nextSecrets: SaveSecrets = {
+      ...savedSecrets,
       auth: {
+        ...savedSecrets.auth,
         jwtSecret: finalJwtSecret,
         agentToken: finalAgentToken,
-        bootstrapPassword: finalBootstrapPassword,
       },
     };
     persistSaveSecrets(savePath, nextSecrets);
@@ -1610,7 +1619,7 @@ export function setBuildBanlist(banlist: string[]): void {
   const fileConfig = readFileConfigForUpdate();
   fileConfig.buildSigning = next;
   try {
-    writeFileSync(getPersistentConfigPath(), JSON.stringify(fileConfig, null, 2));
+    writePersistentFileConfigSync(fileConfig);
   } catch (err) {
     logger.warn("Failed to persist buildSigning banlist", err);
   }

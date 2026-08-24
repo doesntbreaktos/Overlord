@@ -1,7 +1,7 @@
 import type { ClientInfo, ListFilters, ListResult, ClientRole } from "../types";
 import Fuse from "fuse.js";
 import { getThumbnailSummaries } from "../thumbnails";
-import { db, dbPath } from "./connection";
+import { db, dbPath, type TypedDatabase } from "./connection";
 import "./schema";
 
 export * from "./repositories/chat";
@@ -41,8 +41,8 @@ const UPSERT_CLIENT_ROW_SQL = `INSERT INTO clients (id, hwid, role, ip, host, os
        last_seen=excluded.last_seen,
        online=COALESCE(excluded.online, clients.online),
        ping_ms=COALESCE(excluded.ping_ms, clients.ping_ms),
-      build_tag=COALESCE(excluded.build_tag, clients.build_tag),
-      built_by_user_id=COALESCE(excluded.built_by_user_id, clients.built_by_user_id),
+       build_tag=COALESCE(clients.build_tag, excluded.build_tag),
+       built_by_user_id=COALESCE(clients.built_by_user_id, excluded.built_by_user_id),
        enrollment_status=CASE WHEN excluded.enrollment_status <> 'pending' THEN excluded.enrollment_status ELSE COALESCE(clients.enrollment_status, 'pending') END,
        public_key=COALESCE(excluded.public_key, clients.public_key),
        key_fingerprint=COALESCE(excluded.key_fingerprint, clients.key_fingerprint),
@@ -56,13 +56,26 @@ const UPSERT_CLIENT_ROW_SQL = `INSERT INTO clients (id, hwid, role, ip, host, os
        is_admin=COALESCE(excluded.is_admin, clients.is_admin),
        elevation=COALESCE(excluded.elevation, clients.elevation),
        permissions=COALESCE(excluded.permissions, clients.permissions)
+     WHERE
+       excluded.public_key IS NULL
+       OR clients.public_key = excluded.public_key
+       OR (
+         clients.public_key IS NULL
+         AND COALESCE(clients.enrollment_status, 'pending') <> 'approved'
+       )
     `;
 
 const upsertClientRowStmt = db.prepare(UPSERT_CLIENT_ROW_SQL);
 
-function upsertClientRowInternal(partial: ClientDbRow): void {
+function positiveEnrollmentLimit(name: string, fallback: number, max: number): number {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(max, Math.max(1, Math.floor(parsed)));
+}
+
+function upsertClientRowInternal(partial: ClientDbRow): boolean {
   const now = partial.lastSeen ?? Date.now();
-  upsertClientRowStmt.run(
+  const result = upsertClientRowStmt.run(
     partial.id,
     partial.hwid ?? partial.id,
     partial.role ?? null,
@@ -97,17 +110,83 @@ function upsertClientRowInternal(partial: ClientDbRow): void {
     partial.permissions ? JSON.stringify(partial.permissions) : null,
   );
 
-  if (partial.hwid) {
-    db.run(
-      `DELETE FROM clients WHERE hwid=? AND id<>?`,
-      partial.hwid,
-      partial.id,
-    );
-  }
+  return result.changes > 0;
 }
+
+function publicKeyOwnedByAnotherClient(partial: ClientDbRow): boolean {
+  if (!partial.publicKey) return false;
+  const owner = db
+    .query<{ id: string }>("SELECT id FROM clients WHERE public_key=? LIMIT 1")
+    .get(partial.publicKey);
+  return !!owner && owner.id !== partial.id;
+}
+
+const upsertClientRowTx = db.transaction((partial: ClientDbRow) => {
+  if (publicKeyOwnedByAnotherClient(partial)) return false;
+  return upsertClientRowInternal(partial);
+});
+
+const upsertPendingClientRowTx = db.transaction((partial: ClientDbRow & { publicKey: string }) => {
+  const now = partial.lastSeen ?? Date.now();
+  const ttlHours = positiveEnrollmentLimit("OVERLORD_PENDING_ENROLLMENT_TTL_HOURS", 24 * 7, 24 * 365);
+  const stale = db.run(
+    `DELETE FROM clients WHERE id IN (
+       SELECT id FROM clients
+       WHERE COALESCE(enrollment_status, 'pending') = 'pending'
+         AND last_seen < ?
+       LIMIT 500
+     )`,
+    now - ttlHours * 60 * 60 * 1000,
+  );
+  const existing = db
+    .query<{ public_key: string | null }>(
+      `SELECT public_key FROM clients WHERE id=? LIMIT 1`,
+    )
+    .get(partial.id);
+
+  const keyOwner = db
+    .query<{ id: string }>("SELECT id FROM clients WHERE public_key=? LIMIT 1")
+    .get(partial.publicKey);
+
+  // An enrollment request may refresh a row only when it proves the same
+  // identity. In particular, a legacy approved row without a key must not be
+  // claimed by supplying a new key for its ID.
+  if (existing && existing.public_key !== partial.publicKey) {
+    return { changed: false, pruned: stale.changes > 0 };
+  }
+  if (keyOwner && keyOwner.id !== partial.id) {
+    return { changed: false, pruned: stale.changes > 0 };
+  }
+
+  if (!existing) {
+    const maxGlobal = positiveEnrollmentLimit("OVERLORD_MAX_PENDING_ENROLLMENTS", 100_000, 100_000);
+    const maxPerIp = positiveEnrollmentLimit("OVERLORD_MAX_PENDING_ENROLLMENTS_PER_IP", 10_000, 10_000);
+    const globalCount = db.query<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM clients WHERE COALESCE(enrollment_status, 'pending')='pending'",
+    ).get()?.count ?? 0;
+    if (globalCount >= maxGlobal) {
+      return { changed: false, pruned: stale.changes > 0 };
+    }
+    if (partial.ip) {
+      const ipCount = db.query<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM clients
+         WHERE COALESCE(enrollment_status, 'pending')='pending' AND ip=?`,
+      ).get(partial.ip)?.count ?? 0;
+      if (ipCount >= maxPerIp) {
+        return { changed: false, pruned: stale.changes > 0 };
+      }
+    }
+  }
+
+  return {
+    changed: upsertClientRowInternal({ ...partial, enrollmentStatus: "pending" }),
+    pruned: stale.changes > 0,
+  };
+});
 
 const upsertClientRowsTx = db.transaction((rows: ClientDbRow[]) => {
   for (const row of rows) {
+    if (publicKeyOwnedByAnotherClient(row)) continue;
     upsertClientRowInternal(row);
   }
 });
@@ -115,8 +194,21 @@ const upsertClientRowsTx = db.transaction((rows: ClientDbRow[]) => {
 export function upsertClientRow(
   partial: ClientDbRow,
 ) {
-  upsertClientRowInternal(partial);
-  invalidateClientMetricsSummaryCache();
+  const changed = upsertClientRowTx(partial);
+  if (changed) invalidateClientMetricsSummaryCache();
+  return changed;
+}
+
+/**
+ * Persist an unapproved enrollment without allowing the claimed ID or HWID to
+ * mutate a different client identity.
+ */
+export function upsertPendingClientRow(
+  partial: ClientDbRow & { publicKey: string },
+): boolean {
+  const result = upsertPendingClientRowTx(partial);
+  if (result.changed || result.pruned) invalidateClientMetricsSummaryCache();
+  return result.changed;
 }
 
 export function upsertClientRows(rows: ClientDbRow[]): void {
@@ -1712,21 +1804,213 @@ export interface NotificationScreenshotRecord {
   bytes: Uint8Array;
 }
 
-export function saveNotificationScreenshot(record: NotificationScreenshotRecord) {
-  db.run(
-    `INSERT OR REPLACE INTO notification_screenshots
-      (id, notification_id, client_id, ts, format, width, height, bytes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ,
-    record.id,
-    record.notificationId,
-    record.clientId,
-    record.ts,
-    record.format,
-    record.width ?? null,
-    record.height ?? null,
-    record.bytes,
+export const MAX_NOTIFICATION_SCREENSHOT_RECORD_BYTES = 64 * 1024 * 1024;
+
+export type NotificationScreenshotQuotaLimits = {
+  perClientCount: number;
+  perClientBytes: number;
+  globalCount: number;
+  globalBytes: number;
+};
+
+const DEFAULT_NOTIFICATION_SCREENSHOT_QUOTAS: NotificationScreenshotQuotaLimits = {
+  perClientCount: 10_000,
+  perClientBytes: 1024 * 1024 * 1024,
+  globalCount: 100_000,
+  globalBytes: 16 * 1024 * 1024 * 1024,
+};
+const MAX_SCREENSHOT_ROWS_PRUNED_PER_SAVE = 250;
+
+function notificationScreenshotLimit(
+  name: string,
+  fallback: number,
+  maximum: number,
+): number {
+  const value = Number(process.env[name]);
+  if (!Number.isSafeInteger(value) || value <= 0) return fallback;
+  return Math.min(value, maximum);
+}
+
+function getNotificationScreenshotQuotaLimits(): NotificationScreenshotQuotaLimits {
+  return {
+    perClientCount: notificationScreenshotLimit(
+      "OVERLORD_NOTIFICATION_SCREENSHOT_CLIENT_MAX_COUNT",
+      DEFAULT_NOTIFICATION_SCREENSHOT_QUOTAS.perClientCount,
+      10_000,
+    ),
+    perClientBytes: notificationScreenshotLimit(
+      "OVERLORD_NOTIFICATION_SCREENSHOT_CLIENT_MAX_BYTES",
+      DEFAULT_NOTIFICATION_SCREENSHOT_QUOTAS.perClientBytes,
+      1024 * 1024 * 1024,
+    ),
+    globalCount: notificationScreenshotLimit(
+      "OVERLORD_NOTIFICATION_SCREENSHOT_GLOBAL_MAX_COUNT",
+      DEFAULT_NOTIFICATION_SCREENSHOT_QUOTAS.globalCount,
+      100_000,
+    ),
+    globalBytes: notificationScreenshotLimit(
+      "OVERLORD_NOTIFICATION_SCREENSHOT_GLOBAL_MAX_BYTES",
+      DEFAULT_NOTIFICATION_SCREENSHOT_QUOTAS.globalBytes,
+      16 * 1024 * 1024 * 1024,
+    ),
+  };
+}
+
+type ScreenshotQuotaRow = { count: number; bytes: number | null };
+type ScreenshotPruneRow = { id: string; bytes: number };
+
+function deleteNotificationScreenshotRows(
+  database: TypedDatabase,
+  ids: string[],
+): void {
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => "?").join(",");
+  database.run(
+    `UPDATE notifications SET screenshot_id=NULL WHERE screenshot_id IN (${placeholders})`,
+    ...ids,
   );
+  database.run(
+    `DELETE FROM notification_screenshots WHERE id IN (${placeholders})`,
+    ...ids,
+  );
+}
+
+function pruneNotificationScreenshotScope(
+  database: TypedDatabase,
+  clientId: string | null,
+  protectedId: string,
+  incomingBytes: number,
+  maxCount: number,
+  maxBytes: number,
+): boolean {
+  const stats = clientId === null
+    ? database.query<ScreenshotQuotaRow>(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(LENGTH(bytes)), 0) AS bytes
+       FROM notification_screenshots`,
+    ).get()
+    : database.query<ScreenshotQuotaRow>(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(LENGTH(bytes)), 0) AS bytes
+       FROM notification_screenshots WHERE client_id=?`,
+    ).get(clientId);
+  let count = Number(stats?.count ?? 0);
+  let bytes = Number(stats?.bytes ?? 0);
+  if (count + 1 <= maxCount && bytes + incomingBytes <= maxBytes) return true;
+
+  const candidates = clientId === null
+    ? database.query<ScreenshotPruneRow>(
+      `SELECT id, LENGTH(bytes) AS bytes FROM notification_screenshots
+       WHERE id<>?
+       ORDER BY ts ASC, id ASC LIMIT ?`,
+    ).all(protectedId, MAX_SCREENSHOT_ROWS_PRUNED_PER_SAVE)
+    : database.query<ScreenshotPruneRow>(
+      `SELECT id, LENGTH(bytes) AS bytes FROM notification_screenshots
+       WHERE client_id=? AND id<>? ORDER BY ts ASC, id ASC LIMIT ?`,
+    ).all(clientId, protectedId, MAX_SCREENSHOT_ROWS_PRUNED_PER_SAVE);
+
+  const pruneIds: string[] = [];
+  for (const candidate of candidates) {
+    pruneIds.push(candidate.id);
+    count -= 1;
+    bytes -= Number(candidate.bytes || 0);
+    if (count + 1 <= maxCount && bytes + incomingBytes <= maxBytes) break;
+  }
+  deleteNotificationScreenshotRows(database, pruneIds);
+  return count + 1 <= maxCount && bytes + incomingBytes <= maxBytes;
+}
+
+/**
+ * Build the atomic screenshot writer separately so storage/quota behavior can
+ * be regression-tested against an isolated SQLite database.
+ */
+export function createNotificationScreenshotSaver(
+  database: TypedDatabase,
+  quotaProvider: () => NotificationScreenshotQuotaLimits = getNotificationScreenshotQuotaLimits,
+): (record: NotificationScreenshotRecord) => boolean {
+  const transaction = database.transaction((record: NotificationScreenshotRecord): boolean => {
+    const byteLength = record.bytes?.byteLength ?? 0;
+    if (byteLength <= 0 || byteLength > MAX_NOTIFICATION_SCREENSHOT_RECORD_BYTES) return false;
+
+    const notification = database.query<{ screenshot_id: string | null }>(
+      `SELECT screenshot_id FROM notifications WHERE id=? AND client_id=? LIMIT 1`,
+    ).get(record.notificationId, record.clientId);
+    if (!notification || notification.screenshot_id) return false;
+
+    const limits = quotaProvider();
+    if (
+      limits.perClientCount <= 0
+      || limits.perClientBytes <= 0
+      || limits.globalCount <= 0
+      || limits.globalBytes <= 0
+      || byteLength > limits.perClientBytes
+      || byteLength > limits.globalBytes
+    ) return false;
+
+    // Clean up a bounded number of rows left behind by older non-transactional
+    // writes before accounting for the new image.
+    const orphanRows = database.query<{ id: string }>(
+      `SELECT s.id FROM notification_screenshots s
+       LEFT JOIN notifications n
+         ON n.id=s.notification_id
+        AND n.client_id=s.client_id
+        AND n.screenshot_id=s.id
+       WHERE n.id IS NULL
+         AND s.id<>?
+       ORDER BY s.ts ASC, s.id ASC
+       LIMIT ?`,
+    ).all(record.id, MAX_SCREENSHOT_ROWS_PRUNED_PER_SAVE);
+    deleteNotificationScreenshotRows(database, orphanRows.map((row) => row.id));
+
+    const perClientSatisfied = pruneNotificationScreenshotScope(
+      database,
+      record.clientId,
+      record.id,
+      byteLength,
+      limits.perClientCount,
+      limits.perClientBytes,
+    );
+    const globalSatisfied = pruneNotificationScreenshotScope(
+      database,
+      null,
+      record.id,
+      byteLength,
+      limits.globalCount,
+      limits.globalBytes,
+    );
+    if (!perClientSatisfied || !globalSatisfied) return false;
+
+    database.run(
+      `INSERT INTO notification_screenshots
+        (id, notification_id, client_id, ts, format, width, height, bytes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      record.id,
+      record.notificationId,
+      record.clientId,
+      record.ts,
+      record.format,
+      record.width ?? null,
+      record.height ?? null,
+      record.bytes,
+    );
+    const linked = database.run(
+      `UPDATE notifications SET screenshot_id=?
+       WHERE id=? AND client_id=? AND screenshot_id IS NULL`,
+      record.id,
+      record.notificationId,
+      record.clientId,
+    );
+    if (linked.changes !== 1) {
+      throw new Error("notification screenshot link race");
+    }
+    return true;
+  });
+
+  return transaction;
+}
+
+const saveNotificationScreenshotTx = createNotificationScreenshotSaver(db);
+
+export function saveNotificationScreenshot(record: NotificationScreenshotRecord): boolean {
+  return saveNotificationScreenshotTx(record);
 }
 
 export function getNotificationScreenshot(notificationId: string): NotificationScreenshotRecord | null {
@@ -1766,26 +2050,247 @@ export type NotificationRow = {
   screenshotId?: string;
 };
 
-export function saveNotification(record: NotificationRow) {
-  db.run(
-    `INSERT OR REPLACE INTO notifications
-      (id, client_id, host, user, os, title, process, process_path, detail, pid, keyword, category, ts, screenshot_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    record.id,
-    record.clientId,
-    record.host ?? null,
-    record.user ?? null,
-    record.os ?? null,
-    record.title,
-    record.process ?? null,
-    record.processPath ?? null,
-    record.detail ?? null,
-    record.pid ?? null,
-    record.keyword ?? null,
-    record.category,
-    record.ts,
-    record.screenshotId ?? null,
+export type NotificationHistoryQuotaLimits = {
+  perClientCount: number;
+  perClientBytes: number;
+  globalCount: number;
+  globalBytes: number;
+};
+
+const DEFAULT_NOTIFICATION_HISTORY_QUOTAS: NotificationHistoryQuotaLimits = {
+  perClientCount: 100_000,
+  perClientBytes: 1024 * 1024 * 1024,
+  globalCount: 1_000_000,
+  globalBytes: 16 * 1024 * 1024 * 1024,
+};
+const MAX_NOTIFICATION_ROWS_PRUNED_PER_SAVE = 2_000;
+const NOTIFICATION_ROW_OVERHEAD_BYTES = 64;
+const NOTIFICATION_PAYLOAD_BYTES_SQL = `(
+  ${NOTIFICATION_ROW_OVERHEAD_BYTES}
+  + COALESCE(LENGTH(CAST(id AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(client_id AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(host AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(user AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(os AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(title AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(process AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(process_path AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(detail AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(keyword AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(category AS BLOB)), 0)
+  + COALESCE(LENGTH(CAST(screenshot_id AS BLOB)), 0)
+)`;
+
+function notificationHistoryLimit(
+  name: string,
+  fallback: number,
+  maximum: number,
+): number {
+  const value = Number(process.env[name]);
+  if (!Number.isSafeInteger(value) || value <= 0) return fallback;
+  return Math.min(value, maximum);
+}
+
+function getNotificationHistoryQuotaLimits(): NotificationHistoryQuotaLimits {
+  return {
+    perClientCount: notificationHistoryLimit(
+      "OVERLORD_NOTIFICATION_HISTORY_CLIENT_MAX_COUNT",
+      DEFAULT_NOTIFICATION_HISTORY_QUOTAS.perClientCount,
+      100_000,
+    ),
+    perClientBytes: notificationHistoryLimit(
+      "OVERLORD_NOTIFICATION_HISTORY_CLIENT_MAX_BYTES",
+      DEFAULT_NOTIFICATION_HISTORY_QUOTAS.perClientBytes,
+      1024 * 1024 * 1024,
+    ),
+    globalCount: notificationHistoryLimit(
+      "OVERLORD_NOTIFICATION_HISTORY_GLOBAL_MAX_COUNT",
+      DEFAULT_NOTIFICATION_HISTORY_QUOTAS.globalCount,
+      1_000_000,
+    ),
+    globalBytes: notificationHistoryLimit(
+      "OVERLORD_NOTIFICATION_HISTORY_GLOBAL_MAX_BYTES",
+      DEFAULT_NOTIFICATION_HISTORY_QUOTAS.globalBytes,
+      16 * 1024 * 1024 * 1024,
+    ),
+  };
+}
+
+function optionalNotificationStringBytes(value: string | undefined): number {
+  return value === undefined ? 0 : Buffer.byteLength(value, "utf8");
+}
+
+export function notificationPayloadBytes(record: NotificationRow): number {
+  return NOTIFICATION_ROW_OVERHEAD_BYTES
+    + Buffer.byteLength(record.id, "utf8")
+    + Buffer.byteLength(record.clientId, "utf8")
+    + optionalNotificationStringBytes(record.host)
+    + optionalNotificationStringBytes(record.user)
+    + optionalNotificationStringBytes(record.os)
+    + Buffer.byteLength(record.title, "utf8")
+    + optionalNotificationStringBytes(record.process)
+    + optionalNotificationStringBytes(record.processPath)
+    + optionalNotificationStringBytes(record.detail)
+    + optionalNotificationStringBytes(record.keyword)
+    + Buffer.byteLength(record.category, "utf8")
+    + optionalNotificationStringBytes(record.screenshotId);
+}
+
+function deleteNotificationHistoryRows(
+  database: TypedDatabase,
+  ids: string[],
+): void {
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => "?").join(",");
+  database.run(
+    `DELETE FROM notification_screenshots
+     WHERE notification_id IN (${placeholders})
+        OR id IN (
+          SELECT screenshot_id FROM notifications
+          WHERE id IN (${placeholders}) AND screenshot_id IS NOT NULL
+        )`,
+    ...ids,
+    ...ids,
   );
+  database.run(
+    `DELETE FROM notifications WHERE id IN (${placeholders})`,
+    ...ids,
+  );
+}
+
+function pruneNotificationHistoryScope(
+  database: TypedDatabase,
+  clientId: string | null,
+  protectedId: string,
+  projectedCountDelta: number,
+  projectedBytesDelta: number,
+  maxCount: number,
+  maxBytes: number,
+): boolean {
+  const stats = clientId === null
+    ? database.query<{ count: number; bytes: number }>(
+      `SELECT COUNT(*) AS count,
+              COALESCE(SUM(${NOTIFICATION_PAYLOAD_BYTES_SQL}), 0) AS bytes
+       FROM notifications`,
+    ).get()
+    : database.query<{ count: number; bytes: number }>(
+      `SELECT COUNT(*) AS count,
+              COALESCE(SUM(${NOTIFICATION_PAYLOAD_BYTES_SQL}), 0) AS bytes
+       FROM notifications WHERE client_id=?`,
+    ).get(clientId);
+  let count = Number(stats?.count ?? 0) + projectedCountDelta;
+  let bytes = Number(stats?.bytes ?? 0) + projectedBytesDelta;
+  if (count <= maxCount && bytes <= maxBytes) return true;
+
+  const candidates = (clientId === null
+    ? database.query<{ id: string; bytes: number }>(
+      `SELECT id, ${NOTIFICATION_PAYLOAD_BYTES_SQL} AS bytes
+       FROM notifications
+       WHERE id<>?
+       ORDER BY ts ASC, id ASC
+       LIMIT ?`,
+    ).all(protectedId, MAX_NOTIFICATION_ROWS_PRUNED_PER_SAVE)
+    : database.query<{ id: string; bytes: number }>(
+      `SELECT id, ${NOTIFICATION_PAYLOAD_BYTES_SQL} AS bytes
+       FROM notifications
+       WHERE client_id=? AND id<>?
+       ORDER BY ts ASC, id ASC
+       LIMIT ?`,
+    ).all(clientId, protectedId, MAX_NOTIFICATION_ROWS_PRUNED_PER_SAVE));
+
+  const pruneIds: string[] = [];
+  for (const candidate of candidates) {
+    pruneIds.push(candidate.id);
+    count -= 1;
+    bytes -= Number(candidate.bytes || 0);
+    if (count <= maxCount && bytes <= maxBytes) break;
+  }
+  deleteNotificationHistoryRows(database, pruneIds);
+  return count <= maxCount && bytes <= maxBytes;
+}
+
+/** Build an atomic notification writer for isolated quota regression tests. */
+export function createNotificationSaver(
+  database: TypedDatabase,
+  quotaProvider: () => NotificationHistoryQuotaLimits = getNotificationHistoryQuotaLimits,
+): (record: NotificationRow) => boolean {
+  const transaction = database.transaction((record: NotificationRow): boolean => {
+    if (
+      typeof record.id !== "string"
+      || record.id.length === 0
+      || typeof record.clientId !== "string"
+      || record.clientId.length === 0
+      || typeof record.title !== "string"
+      || typeof record.category !== "string"
+      || !Number.isFinite(record.ts)
+    ) return false;
+
+    const limits = quotaProvider();
+    const bytes = notificationPayloadBytes(record);
+    if (
+      limits.perClientCount <= 0
+      || limits.perClientBytes <= 0
+      || limits.globalCount <= 0
+      || limits.globalBytes <= 0
+      || bytes > limits.perClientBytes
+      || bytes > limits.globalBytes
+    ) return false;
+
+    const existing = database.query<{ client_id: string; bytes: number }>(
+      `SELECT client_id, ${NOTIFICATION_PAYLOAD_BYTES_SQL} AS bytes
+       FROM notifications WHERE id=? LIMIT 1`,
+    ).get(record.id);
+    const existingInClientScope = existing?.client_id === record.clientId;
+
+    const perClientSatisfied = pruneNotificationHistoryScope(
+      database,
+      record.clientId,
+      record.id,
+      existingInClientScope ? 0 : 1,
+      bytes - (existingInClientScope ? Number(existing.bytes || 0) : 0),
+      limits.perClientCount,
+      limits.perClientBytes,
+    );
+    const globalSatisfied = pruneNotificationHistoryScope(
+      database,
+      null,
+      record.id,
+      existing ? 0 : 1,
+      bytes - Number(existing?.bytes || 0),
+      limits.globalCount,
+      limits.globalBytes,
+    );
+    if (!perClientSatisfied || !globalSatisfied) return false;
+
+    database.run(
+      `INSERT OR REPLACE INTO notifications
+        (id, client_id, host, user, os, title, process, process_path, detail, pid, keyword, category, ts, screenshot_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      record.id,
+      record.clientId,
+      record.host ?? null,
+      record.user ?? null,
+      record.os ?? null,
+      record.title,
+      record.process ?? null,
+      record.processPath ?? null,
+      record.detail ?? null,
+      record.pid ?? null,
+      record.keyword ?? null,
+      record.category,
+      record.ts,
+      record.screenshotId ?? null,
+    );
+    return true;
+  });
+
+  return transaction;
+}
+
+const saveNotificationTx = createNotificationSaver(db);
+
+export function saveNotification(record: NotificationRow): boolean {
+  return saveNotificationTx(record);
 }
 
 export function updateNotificationScreenshotId(notificationId: string, screenshotId: string) {
@@ -1950,12 +2455,131 @@ export interface PushSubscriptionRecord {
   createdAt: number;
 }
 
-export function savePushSubscription(userId: number, endpoint: string, p256dh: string, auth: string): void {
+export interface PushSubscriptionLimits {
+  perUser: number;
+  global: number;
+}
+
+export type SavePushSubscriptionResult =
+  | { ok: true; action: "created" | "updated"; evictedEndpoint?: string }
+  | { ok: false; reason: "endpoint_conflict" }
+  | { ok: false; reason: "global_limit"; limit: number };
+
+function positivePushSubscriptionLimit(name: string, fallback: number, maximum: number): number {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(maximum, Math.max(1, Math.floor(parsed)));
+}
+
+export function getPushSubscriptionLimits(): PushSubscriptionLimits {
+  return {
+    perUser: positivePushSubscriptionLimit(
+      "OVERLORD_MAX_PUSH_SUBSCRIPTIONS_PER_USER",
+      10,
+      1_000,
+    ),
+    global: positivePushSubscriptionLimit(
+      "OVERLORD_MAX_PUSH_SUBSCRIPTIONS",
+      10_000,
+      1_000_000,
+    ),
+  };
+}
+
+const savePushSubscriptionTx = db.transaction((
+  userId: number,
+  endpoint: string,
+  p256dh: string,
+  auth: string,
+  limits: PushSubscriptionLimits,
+): SavePushSubscriptionResult => {
+  const existing = db
+    .query<{ user_id: number }>(
+      `SELECT user_id FROM push_subscriptions WHERE endpoint=? LIMIT 1`,
+    )
+    .get(endpoint);
+
+  // Do not let one signed-in user take over another user's endpoint. Updating
+  // the keys for the endpoint's existing owner does not consume another slot.
+  if (existing) {
+    if (existing.user_id !== userId) {
+      return { ok: false, reason: "endpoint_conflict" };
+    }
+    db.run(
+      `UPDATE push_subscriptions
+       SET p256dh=?, auth=?, created_at=?
+       WHERE endpoint=? AND user_id=?`,
+      p256dh,
+      auth,
+      Date.now(),
+      endpoint,
+      userId,
+    );
+    return { ok: true, action: "updated" };
+  }
+
+  const userCount = Number(db
+    .query<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM push_subscriptions WHERE user_id=?`,
+    )
+    .get(userId)?.count ?? 0);
+
+  let evictedEndpoint: string | undefined;
+  if (userCount >= limits.perUser) {
+    const oldest = db
+      .query<{ endpoint: string }>(
+        `SELECT endpoint FROM push_subscriptions
+         WHERE user_id=?
+         ORDER BY created_at ASC, id ASC
+         LIMIT 1`,
+      )
+      .get(userId);
+    if (oldest) {
+      db.run(
+        `DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?`,
+        oldest.endpoint,
+        userId,
+      );
+      evictedEndpoint = oldest.endpoint;
+    }
+  } else {
+    const globalCount = Number(db
+      .query<{ count: number }>(`SELECT COUNT(*) AS count FROM push_subscriptions`)
+      .get()?.count ?? 0);
+    if (globalCount >= limits.global) {
+      return { ok: false, reason: "global_limit", limit: limits.global };
+    }
+  }
+
   db.run(
-    `INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at)
+    `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at)
      VALUES (?, ?, ?, ?, ?)`,
-    userId, endpoint, p256dh, auth, Date.now(),
+    userId,
+    endpoint,
+    p256dh,
+    auth,
+    Date.now(),
   );
+  return { ok: true, action: "created", ...(evictedEndpoint ? { evictedEndpoint } : {}) };
+});
+
+export function savePushSubscription(
+  userId: number,
+  endpoint: string,
+  p256dh: string,
+  auth: string,
+  limits: PushSubscriptionLimits = getPushSubscriptionLimits(),
+): SavePushSubscriptionResult {
+  const defaults = getPushSubscriptionLimits();
+  const normalizedLimits = {
+    perUser: Number.isFinite(limits.perUser)
+      ? Math.max(1, Math.min(1_000, Math.floor(limits.perUser)))
+      : defaults.perUser,
+    global: Number.isFinite(limits.global)
+      ? Math.max(1, Math.min(1_000_000, Math.floor(limits.global)))
+      : defaults.global,
+  };
+  return savePushSubscriptionTx(userId, endpoint, p256dh, auth, normalizedLimits);
 }
 
 export function deletePushSubscription(endpoint: string): void {
@@ -1976,9 +2600,15 @@ export function deletePushSubscriptionsByUser(userId: number): void {
 }
 
 export function getPushSubscriptionsByUser(userId: number): PushSubscriptionRecord[] {
+  const limit = getPushSubscriptionLimits().perUser;
   return db
-    .query<any>(`SELECT * FROM push_subscriptions WHERE user_id=?`)
-    .all(userId)
+    .query<any>(
+      `SELECT * FROM push_subscriptions
+       WHERE user_id=?
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(userId, limit)
     .map((r: any) => ({
       id: r.id,
       userId: r.user_id,
@@ -1989,10 +2619,19 @@ export function getPushSubscriptionsByUser(userId: number): PushSubscriptionReco
     }));
 }
 
-export function getAllPushSubscriptions(): PushSubscriptionRecord[] {
+export function getAllPushSubscriptions(maxResults = getPushSubscriptionLimits().global): PushSubscriptionRecord[] {
+  const limit = Math.max(
+    0,
+    Math.min(getPushSubscriptionLimits().global, Math.floor(Number(maxResults) || 0)),
+  );
+  if (limit === 0) return [];
   return db
-    .query<any>(`SELECT * FROM push_subscriptions`)
-    .all()
+    .query<any>(
+      `SELECT * FROM push_subscriptions
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(limit)
     .map((r: any) => ({
       id: r.id,
       userId: r.user_id,

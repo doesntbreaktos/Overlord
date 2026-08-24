@@ -794,6 +794,36 @@ async function loadMfaStatus() {
   }
 }
 
+function renderMfaQrCode(svgMarkup) {
+  if (!mfaQrCode) return;
+  mfaQrCode.replaceChildren();
+
+  const svg = typeof svgMarkup === "string" ? svgMarkup.trim() : "";
+  if (!svg || svg.length > 512 * 1024 || !/^<svg[\s>]/i.test(svg) || !/<\/svg>$/i.test(svg)) {
+    return;
+  }
+
+  // Keep API-provided SVG out of the document DOM. SVG loaded through an
+  // image element is an inert image context, so scripts and event handlers in
+  // a compromised response cannot run in the settings page.
+  const image = document.createElement("img");
+  image.alt = "MFA setup QR code";
+  image.className = "block h-full w-full";
+  image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  mfaQrCode.appendChild(image);
+}
+
+function safeMfaOtpauthUrl(value) {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  if (!candidate || candidate.length > 4096) return "#";
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === "otpauth:" && parsed.hostname === "totp" ? parsed.href : "#";
+  } catch {
+    return "#";
+  }
+}
+
 async function startMfaSetup() {
   try {
     const res = await fetch("/api/mfa/setup", { method: "POST", credentials: "include" });
@@ -802,9 +832,9 @@ async function startMfaSetup() {
       showMfaMessage(data.error || "Failed to start MFA setup.", "error");
       return;
     }
-    if (mfaQrCode) mfaQrCode.innerHTML = data.qrSvg || "";
+    renderMfaQrCode(data.qrSvg);
     if (mfaSecretText) mfaSecretText.textContent = data.secret || "";
-    if (mfaOtpauthLink) mfaOtpauthLink.href = data.otpauthUrl || "#";
+    if (mfaOtpauthLink) mfaOtpauthLink.setAttribute("href", safeMfaOtpauthUrl(data.otpauthUrl));
     revealElement(mfaSetupPanel, { duration: 240, offset: 8 });
     if (mfaEnableCodeInput) mfaEnableCodeInput.focus();
   } catch {

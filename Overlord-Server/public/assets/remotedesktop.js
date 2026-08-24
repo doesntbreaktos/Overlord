@@ -852,7 +852,10 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
         error: '<i class="fa-solid fa-circle-exclamation text-rose-400"></i>',
       };
       const label = streamStatusLabel;
-      statusEl.innerHTML = `${icons[state] || icons.idle} <span>${label}</span>`;
+      statusEl.innerHTML = icons[state] || icons.idle;
+      const labelEl = document.createElement("span");
+      labelEl.textContent = String(label || "");
+      statusEl.appendChild(labelEl);
       const base = "inline-flex items-center gap-2 px-3 py-2 rounded-full border text-sm";
       const styles = {
         streaming: "bg-emerald-900/40 text-emerald-100 border-emerald-700/70",
@@ -1606,12 +1609,12 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
       accessibility: "Accessibility",
       fullDiskAccess: "Full Disk Access",
     };
-    const list = missing.map(k => labels[k] || k).join(", ");
+    const list = missing.map((key) => labels[String(key)] || String(key)).join(", ");
 
     banner.innerHTML = `
       <div class="flex items-center gap-2">
         <i class="fa-solid fa-triangle-exclamation text-amber-400"></i>
-        <span><strong>macOS permissions missing:</strong> ${list}</span>
+        <span><strong>macOS permissions missing:</strong> <span class="rd-elevate-missing"></span></span>
       </div>
       <div class="text-xs text-amber-300/80">
         The client needs elevated privileges to grant these permissions. Enter the user's password to elevate.
@@ -1626,6 +1629,8 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
       </div>
       <div id="rdElevateStatus" class="text-xs text-slate-400 hidden"></div>
     `;
+    const missingEl = banner.querySelector(".rd-elevate-missing");
+    if (missingEl) missingEl.textContent = list;
 
     // Insert banner above the canvas area
     if (canvasContainer && canvasContainer.parentNode) {

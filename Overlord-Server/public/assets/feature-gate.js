@@ -80,5 +80,5 @@ function showAccessDenied(reasons) {
 function escapeHtml(text) {
   const el = document.createElement("span");
   el.textContent = text;
-  return el.innerHTML;
+  return el.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }

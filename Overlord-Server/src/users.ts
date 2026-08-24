@@ -87,7 +87,7 @@ if (userCount.count === 0) {
   const mustChangePassword = config.auth.passwordIsUserSupplied ? 0 : 1;
 
   logger.info("[users] No users found, creating default admin account");
-  const defaultPassword = await Bun.password.hash(initialPassword, {
+  const defaultPassword = Bun.password.hashSync(initialPassword, {
     algorithm: "bcrypt",
     cost: 10,
   });
@@ -1671,5 +1671,3 @@ export function getTotalUserCount(): number {
   const row = db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number };
   return row.count;
 }
-
-

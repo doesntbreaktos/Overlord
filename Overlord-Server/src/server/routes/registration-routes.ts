@@ -3,6 +3,7 @@ import { AuditAction, logAudit } from "../../auditLog";
 import { getConfig } from "../../config";
 import { logger } from "../../logger";
 import { requirePermission } from "../../rbac";
+import { readJsonBodyLimited, RequestBodyTooLargeError } from "../request-body";
 import {
   registerUser,
   deleteUser,
@@ -29,6 +30,7 @@ interface RegRateLimitEntry {
 const regRateLimitStore = new Map<string, RegRateLimitEntry>();
 const REG_MAX_ATTEMPTS = 5;
 const REG_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const REGISTRATION_BODY_MAX_BYTES = 16 * 1024;
 
 function isRegRateLimited(ip: string): boolean {
   const entry = regRateLimitStore.get(ip);
@@ -114,8 +116,11 @@ export async function handleRegistrationRoutes(
 
     let body: any;
     try {
-      body = await req.json();
-    } catch {
+      body = await readJsonBodyLimited(req, REGISTRATION_BODY_MAX_BYTES);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        return Response.json({ error: "Request body too large" }, { status: 413 });
+      }
       return Response.json({ error: "Invalid JSON" }, { status: 400 });
     }
 

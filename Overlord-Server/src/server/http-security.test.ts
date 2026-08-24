@@ -2,17 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { CORS_HEADERS, SECURITY_HEADERS } from "./http-security";
 
 describe("CORS_HEADERS", () => {
-  test("has restrictive Access-Control-Allow-Origin", () => {
+  test("preserves legacy sandboxed-document GET compatibility without credentials", () => {
     expect(CORS_HEADERS["Access-Control-Allow-Origin"]).toBe("null");
-  });
-
-  test("limits allowed methods", () => {
-    expect(CORS_HEADERS["Access-Control-Allow-Methods"]).toContain("GET");
-    expect(CORS_HEADERS["Access-Control-Allow-Methods"]).toContain("OPTIONS");
-  });
-
-  test("allows Content-Type header", () => {
-    expect(CORS_HEADERS["Access-Control-Allow-Headers"]).toContain("Content-Type");
+    expect(CORS_HEADERS).not.toHaveProperty("Access-Control-Allow-Credentials");
   });
 });
 
@@ -22,6 +14,9 @@ describe("SECURITY_HEADERS", () => {
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("script-src 'self'");
     expect(csp).toContain("font-src 'self' data:");
+    expect(csp).toContain("base-uri 'none'");
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).toContain("object-src blob:");
     expect(csp).toContain("frame-ancestors 'none'");
   });
 
@@ -33,8 +28,8 @@ describe("SECURITY_HEADERS", () => {
     expect(SECURITY_HEADERS["X-Frame-Options"]).toBe("DENY");
   });
 
-  test("enables XSS protection", () => {
-    expect(SECURITY_HEADERS["X-XSS-Protection"]).toBe("1; mode=block");
+  test("disables the obsolete browser XSS auditor", () => {
+    expect(SECURITY_HEADERS["X-XSS-Protection"]).toBe("0");
   });
 
   test("sets strict referrer policy", () => {

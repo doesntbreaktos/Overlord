@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,6 +64,35 @@ type Env struct {
 	NotificationKeywords      []string
 	NotificationMinIntervalMs int
 	NotificationClipboard     bool
+	clientIDMu                sync.RWMutex
+	serverClientID            string
+}
+
+func (e *Env) SetServerClientID(value string) bool {
+	clientID := strings.TrimSpace(value)
+	if clientID == "" || len(clientID) > 256 {
+		return false
+	}
+	for _, r := range clientID {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+
+	e.clientIDMu.Lock()
+	e.serverClientID = clientID
+	e.clientIDMu.Unlock()
+	return true
+}
+
+func (e *Env) ClientID() string {
+	e.clientIDMu.RLock()
+	clientID := e.serverClientID
+	e.clientIDMu.RUnlock()
+	if clientID != "" {
+		return clientID
+	}
+	return strings.TrimSpace(e.Cfg.ID)
 }
 
 func (e *Env) SetNotificationConfig(keywords []string, minIntervalMs int, clipboardEnabled bool) {

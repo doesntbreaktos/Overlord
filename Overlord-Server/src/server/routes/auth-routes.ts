@@ -42,6 +42,9 @@ import {
 } from "../../users";
 import { getUserPermissions, requirePermission } from "../../rbac";
 import { makeAuthCookie, makeAuthCookieClear } from "./auth-cookie";
+import { readJsonBodyLimited, RequestBodyTooLargeError } from "../request-body";
+
+const LOGIN_BODY_MAX_BYTES = 16 * 1024;
 
 type RequestIpProvider = {
   requestIP: (req: Request) => { address?: string } | null | undefined;
@@ -86,10 +89,15 @@ export async function handleAuthRoutes(
     }
 
     try {
-      const body = await req.json();
-      const username = body?.user || "";
-      const password = body?.pass || "";
+      const body = await readJsonBodyLimited(req, LOGIN_BODY_MAX_BYTES);
+      const username = typeof body?.user === "string" ? body.user : "";
+      const password = typeof body?.pass === "string" ? body.pass : "";
       const mfaCode = typeof body?.mfaCode === "string" ? body.mfaCode : "";
+
+      if (username.length > 256 || password.length > 1_024 || mfaCode.length > 32) {
+        recordFailedAttempt(ip);
+        return Response.json({ ok: false, error: "Invalid credentials" }, { status: 401 });
+      }
 
       const user = await authenticateUser(username, password);
 
@@ -177,6 +185,9 @@ export async function handleAuthRoutes(
         errorMessage: "Invalid credentials",
       });
     } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        return Response.json({ ok: false, error: "Request body too large" }, { status: 413 });
+      }
       logger.error("[auth] Login error:", error);
       logAudit({
         timestamp: Date.now(),

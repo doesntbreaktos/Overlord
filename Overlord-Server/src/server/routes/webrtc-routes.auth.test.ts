@@ -62,6 +62,24 @@ describe("WebRTC viewer authorization", () => {
     expect(response!.status).toBe(403);
   });
 
+  test("rejects oversized SDP before proxying it upstream", async () => {
+    const auth = await makeOperator();
+    const url = new URL("https://localhost/api/webrtc/agents/client-a/desktop/whep");
+    const response = await handleWebrtcRoutes(
+      new Request(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+          "Content-Length": String(1024 * 1024 + 1),
+        },
+        body: "offer",
+      }),
+      url,
+    );
+
+    expect(response!.status).toBe(413);
+  });
+
   test("revokes only the matching user's tracked media sessions", async () => {
     const deleted: string[] = [];
     trackWebrtcViewerSession({

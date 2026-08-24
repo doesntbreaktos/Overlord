@@ -12,6 +12,7 @@ import {
   isTokenRevoked,
   pruneExpiredRevokedTokens,
   createSession,
+  getSessionByTokenHash,
   hashTokenForSession,
   revokeSessionByTokenHash,
   updateSessionActivity,
@@ -85,25 +86,27 @@ export async function generateToken(
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + getSessionTtlSeconds();
 
-  try {
-    createSession({
-      id: crypto.randomUUID(),
-      userId: user.id,
-      tokenHash,
-      ip: sessionMeta?.ip || null,
-      userAgent: sessionMeta?.userAgent || null,
-      createdAt: now,
-      expiresAt,
-    });
-  } catch (e) {
-    console.error("[auth] Failed to create session record:", e);
-  }
+  createSession({
+    id: crypto.randomUUID(),
+    userId: user.id,
+    tokenHash,
+    ip: sessionMeta?.ip || null,
+    userAgent: sessionMeta?.userAgent || null,
+    createdAt: now,
+    expiresAt,
+  });
 
   return token;
 }
 
 export async function verifyToken(token: string): Promise<JWTPayload | null> {
   if (isTokenRevoked(token)) {
+    return null;
+  }
+
+  const session = getSessionByTokenHash(hashTokenForSession(token));
+  if (!session || session.expiresAt <= Math.floor(Date.now() / 1000)) {
+    tokenCache.delete(token);
     return null;
   }
 

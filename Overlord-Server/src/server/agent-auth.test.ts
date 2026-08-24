@@ -28,9 +28,9 @@ describe("isAuthorizedAgentRequest", () => {
     for (const k of Object.keys(originalEnv)) delete originalEnv[k];
   });
 
-  test("returns true when agentToken is empty/undefined", () => {
-    expect(isAuthorizedAgentRequest(makeReq(), makeUrl(), "")).toBe(true);
-    expect(isAuthorizedAgentRequest(makeReq(), makeUrl(), undefined)).toBe(true);
+  test("fails closed when agentToken is empty/undefined", () => {
+    expect(isAuthorizedAgentRequest(makeReq(), makeUrl(), "")).toBe(false);
+    expect(isAuthorizedAgentRequest(makeReq(), makeUrl(), undefined)).toBe(false);
   });
 
   test("authenticates via x-agent-token header", () => {
@@ -39,10 +39,17 @@ describe("isAuthorizedAgentRequest", () => {
     expect(isAuthorizedAgentRequest(req, makeUrl(), token)).toBe(true);
   });
 
-  test("authenticates via query string token", () => {
+  test("supports query string tokens by default for legacy clients", () => {
     const token = "secret-agent-token-abc123";
     const url = makeUrl({ token });
     expect(isAuthorizedAgentRequest(makeReq(), url, token)).toBe(true);
+  });
+
+  test("allows operators to explicitly disable legacy query tokens", () => {
+    setEnv("OVERLORD_ALLOW_AGENT_TOKEN_QUERY", "false");
+    const token = "secret-agent-token-abc123";
+    const url = makeUrl({ token });
+    expect(isAuthorizedAgentRequest(makeReq(), url, token)).toBe(false);
   });
 
   test("rejects wrong header token", () => {

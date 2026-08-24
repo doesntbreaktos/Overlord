@@ -979,6 +979,12 @@ export async function handleMiscRoutes(
     if (user.role === "viewer") {
       return new Response("Forbidden", { status: 403 });
     }
+    try {
+      requirePermission(user, "clients:control");
+    } catch (error) {
+      if (error instanceof Response) return error;
+      return new Response("Forbidden", { status: 403 });
+    }
     const proxies = getActiveProxies().filter((p) =>
       canUserAccessClient(user.userId, user.role, p.clientId),
     );
@@ -991,6 +997,12 @@ export async function handleMiscRoutes(
       return new Response("Unauthorized", { status: 401 });
     }
     if (user.role === "viewer") {
+      return new Response("Forbidden", { status: 403 });
+    }
+    try {
+      requirePermission(user, "clients:control");
+    } catch (error) {
+      if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
     }
     let body: any = {};
@@ -1032,6 +1044,12 @@ export async function handleMiscRoutes(
       return new Response("Unauthorized", { status: 401 });
     }
     if (user.role === "viewer") {
+      return new Response("Forbidden", { status: 403 });
+    }
+    try {
+      requirePermission(user, "clients:control");
+    } catch (error) {
+      if (error instanceof Response) return error;
       return new Response("Forbidden", { status: 403 });
     }
     let body: any = {};

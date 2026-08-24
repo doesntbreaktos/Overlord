@@ -29,12 +29,17 @@ export type SocketData = {
   autoTasksRan?: boolean;
   autoDeploysRan?: boolean;
   enrollmentNonce?: string;
+  enrollmentState?: "challenged" | "verifying" | "authenticated" | "rejected";
+  enrollmentTimeout?: ReturnType<typeof setTimeout>;
   disconnectReason?: string;
   disconnectDetail?: string;
   rdDecoderCodecs?: string[];
   rdPreferredCodecs?: string[];
   rdCodecTransport?: "websocket" | "webrtc";
   rdSelectedCodec?: string;
+  ingressBudgetUpdatedAt?: number;
+  ingressByteTokens?: number;
+  ingressMessageTokens?: number;
 };
 
 export type ConsoleSession = {

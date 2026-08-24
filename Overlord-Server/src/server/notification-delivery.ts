@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import {
   getNotificationScreenshot,
   saveNotificationScreenshot,
-  updateNotificationScreenshotId,
+  MAX_NOTIFICATION_SCREENSHOT_RECORD_BYTES,
   getAllPushSubscriptions,
   deletePushSubscription,
   type NotificationScreenshotRecord,
@@ -10,6 +10,7 @@ import {
 } from "../db";
 import { logger } from "../logger";
 import { sendWebPush } from "./web-push";
+import { fetchPublicHttpResponse } from "./url-security";
 
 export type NotificationRecord = {
   id: string;
@@ -58,6 +59,225 @@ export const DEFAULT_TELEGRAM_TEMPLATE =
 
 const NOTIFICATION_SCREENSHOT_WAIT_MS = 5_000;
 const NOTIFICATION_SCREENSHOT_POLL_MS = 250;
+export const MAX_NOTIFICATION_SCREENSHOT_BYTES = MAX_NOTIFICATION_SCREENSHOT_RECORD_BYTES;
+export const MAX_NOTIFICATION_SCREENSHOT_DIMENSION = 32_768;
+// Keep worst-case browser RGBA decode near 32 MiB per image. Compressed byte
+// limits alone do not protect against solid-color PNG/WebP decompression bombs.
+export const MAX_NOTIFICATION_SCREENSHOT_PIXELS = 512 * 1024 * 1024;
+
+function boundedPositiveIntegerEnv(name: string, fallback: number, maximum: number): number {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(maximum, Math.max(1, Math.floor(parsed)));
+}
+
+export const WEB_PUSH_DELIVERY_CONCURRENCY = boundedPositiveIntegerEnv(
+  "OVERLORD_WEB_PUSH_DELIVERY_CONCURRENCY",
+  8,
+  64,
+);
+export const WEB_PUSH_DELIVERY_BATCH_SIZE = boundedPositiveIntegerEnv(
+  "OVERLORD_WEB_PUSH_DELIVERY_BATCH_SIZE",
+  100,
+  1_000,
+);
+
+/**
+ * Settle every task while keeping both the active promise count and each
+ * materialized batch bounded. This preserves allSettled-style fan-out without
+ * creating one live promise per stored subscription.
+ */
+export async function settleInBoundedBatches<T>(
+  items: readonly T[],
+  task: (item: T) => Promise<void>,
+  options: {
+    concurrency?: number;
+    batchSize?: number;
+    onError?: (error: unknown, item: T) => void;
+  } = {},
+): Promise<void> {
+  const requestedConcurrency = Number(options.concurrency ?? WEB_PUSH_DELIVERY_CONCURRENCY);
+  const requestedBatchSize = Number(options.batchSize ?? WEB_PUSH_DELIVERY_BATCH_SIZE);
+  const concurrency = Number.isFinite(requestedConcurrency)
+    ? Math.max(1, Math.min(64, Math.floor(requestedConcurrency)))
+    : WEB_PUSH_DELIVERY_CONCURRENCY;
+  const batchSize = Number.isFinite(requestedBatchSize)
+    ? Math.max(1, Math.min(1_000, Math.floor(requestedBatchSize)))
+    : WEB_PUSH_DELIVERY_BATCH_SIZE;
+
+  for (let batchStart = 0; batchStart < items.length; batchStart += batchSize) {
+    const batch = items.slice(batchStart, batchStart + batchSize);
+    let nextIndex = 0;
+    const workers = Array.from(
+      { length: Math.min(concurrency, batch.length) },
+      async () => {
+        while (nextIndex < batch.length) {
+          const item = batch[nextIndex++];
+          try {
+            await task(item);
+          } catch (error) {
+            try {
+              options.onError?.(error, item);
+            } catch {
+              // Delivery remains best-effort even if diagnostic logging fails.
+            }
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+  }
+}
+
+export type ValidatedNotificationScreenshot = {
+  bytes: Uint8Array;
+  format: "jpeg" | "png" | "webp";
+  width?: number;
+  height?: number;
+};
+
+function normalizeScreenshotDimension(value: unknown): number | undefined {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > MAX_NOTIFICATION_SCREENSHOT_DIMENSION) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function screenshotDimensionsAllowed(width: number, height: number): boolean {
+  return Number.isInteger(width)
+    && Number.isInteger(height)
+    && width > 0
+    && height > 0
+    && width <= MAX_NOTIFICATION_SCREENSHOT_DIMENSION
+    && height <= MAX_NOTIFICATION_SCREENSHOT_DIMENSION
+    && width * height <= MAX_NOTIFICATION_SCREENSHOT_PIXELS;
+}
+
+function parsePngScreenshot(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 45 || !buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return null;
+  let offset = 8;
+  let dimensions: { width: number; height: number } | null = null;
+  let sawData = false;
+  while (offset + 12 <= buf.length) {
+    const length = buf.readUInt32BE(offset);
+    const end = offset + 12 + length;
+    if (end > buf.length) return null;
+    const type = buf.subarray(offset + 4, offset + 8).toString("ascii");
+    if (type === "acTL" || type === "fcTL" || type === "fdAT") return null;
+    if (offset === 8) {
+      if (type !== "IHDR" || length !== 13) return null;
+      dimensions = { width: buf.readUInt32BE(offset + 8), height: buf.readUInt32BE(offset + 12) };
+    } else if (type === "IDAT") {
+      sawData = true;
+    } else if (type === "IEND") {
+      return length === 0 && end === buf.length && sawData ? dimensions : null;
+    }
+    offset = end;
+  }
+  return null;
+}
+
+function parseJpegScreenshot(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 16 || buf[0] !== 0xff || buf[1] !== 0xd8 || buf[buf.length - 2] !== 0xff || buf[buf.length - 1] !== 0xd9) return null;
+  let offset = 2;
+  while (offset + 4 <= buf.length - 2) {
+    if (buf[offset] !== 0xff) return null;
+    while (offset < buf.length && buf[offset] === 0xff) offset += 1;
+    const marker = buf[offset++];
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > buf.length) return null;
+    const length = buf.readUInt16BE(offset);
+    if (length < 2 || offset + length > buf.length) return null;
+    const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isFrame) {
+      if (length < 8) return null;
+      return { width: buf.readUInt16BE(offset + 5), height: buf.readUInt16BE(offset + 3) };
+    }
+    if (marker === 0xda) return null;
+    offset += length;
+  }
+  return null;
+}
+
+function parseWebpScreenshot(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 20 || buf.subarray(0, 4).toString("ascii") !== "RIFF" || buf.readUInt32LE(4) + 8 !== buf.length || buf.subarray(8, 12).toString("ascii") !== "WEBP") return null;
+  let offset = 12;
+  let dimensions: { width: number; height: number } | null = null;
+  while (offset + 8 <= buf.length) {
+    const type = buf.subarray(offset, offset + 4).toString("ascii");
+    const length = buf.readUInt32LE(offset + 4);
+    const data = offset + 8;
+    const end = data + length;
+    if (end > buf.length || type === "ANIM" || type === "ANMF") return null;
+    if (type === "VP8 " && length >= 10 && buf[data + 3] === 0x9d && buf[data + 4] === 0x01 && buf[data + 5] === 0x2a) {
+      dimensions ??= { width: buf.readUInt16LE(data + 6) & 0x3fff, height: buf.readUInt16LE(data + 8) & 0x3fff };
+    } else if (type === "VP8L" && length >= 5 && buf[data] === 0x2f) {
+      const packed = buf.readUInt32LE(data + 1);
+      dimensions ??= { width: (packed & 0x3fff) + 1, height: ((packed >>> 14) & 0x3fff) + 1 };
+    } else if (type === "VP8X" && length >= 10) {
+      if ((buf[data] & 0x02) !== 0) return null;
+      dimensions ??= {
+        width: 1 + buf[data + 4] + (buf[data + 5] << 8) + (buf[data + 6] << 16),
+        height: 1 + buf[data + 7] + (buf[data + 8] << 8) + (buf[data + 9] << 16),
+      };
+    }
+    offset = end + (length % 2);
+  }
+  return offset === buf.length ? dimensions : null;
+}
+
+export function validateNotificationScreenshotPayload(
+  payload: any,
+): ValidatedNotificationScreenshot | null {
+  let bytes: Uint8Array | null = null;
+  if (payload?.data instanceof Uint8Array) {
+    bytes = new Uint8Array(
+      payload.data.buffer,
+      payload.data.byteOffset,
+      payload.data.byteLength,
+    );
+  } else if (payload?.data instanceof ArrayBuffer) {
+    bytes = new Uint8Array(payload.data);
+  } else if (ArrayBuffer.isView(payload?.data)) {
+    bytes = new Uint8Array(
+      payload.data.buffer,
+      payload.data.byteOffset,
+      payload.data.byteLength,
+    );
+  }
+
+  if (!bytes || bytes.byteLength === 0 || bytes.byteLength > MAX_NOTIFICATION_SCREENSHOT_BYTES) {
+    return null;
+  }
+
+  const rawFormat = typeof payload?.format === "string" ? payload.format.toLowerCase() : "jpeg";
+  const format = rawFormat === "jpg" ? "jpeg" : rawFormat;
+  if (format !== "jpeg" && format !== "png" && format !== "webp") {
+    return null;
+  }
+
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const dimensions = format === "png"
+    ? parsePngScreenshot(buf)
+    : format === "webp"
+      ? parseWebpScreenshot(buf)
+      : parseJpegScreenshot(buf);
+  if (!dimensions || !screenshotDimensionsAllowed(dimensions.width, dimensions.height)) return null;
+  const reportedWidth = normalizeScreenshotDimension(payload?.width);
+  const reportedHeight = normalizeScreenshotDimension(payload?.height);
+  if (
+    (payload?.width !== undefined && reportedWidth !== dimensions.width)
+    || (payload?.height !== undefined && reportedHeight !== dimensions.height)
+  ) return null;
+
+  return {
+    bytes,
+    format,
+    width: dimensions.width,
+    height: dimensions.height,
+  };
+}
 
 export function isPrivateOrInternalHostname(hostname: string): boolean {
   const h = hostname.toLowerCase();
@@ -156,21 +376,25 @@ export function storeNotificationScreenshot(
   width?: number,
   height?: number,
 ): void {
-  if (!bytes || bytes.length === 0) return;
+  const validated = validateNotificationScreenshotPayload({ data: bytes, format, width, height });
+  if (!validated) return;
   const screenshotId = uuidv4();
 
-  saveNotificationScreenshot({
+  const saved = saveNotificationScreenshot({
     id: screenshotId,
     notificationId: pending.notificationId,
     clientId: pending.clientId,
     ts: pending.ts,
-    format,
-    width,
-    height,
-    bytes,
+    format: validated.format,
+    width: validated.width,
+    height: validated.height,
+    bytes: validated.bytes,
   });
-
-  updateNotificationScreenshotId(pending.notificationId, screenshotId);
+  if (!saved) {
+    logger.warn(
+      `[notify] screenshot was not stored due to a missing notification, duplicate result, or storage quota notification=${pending.notificationId}`,
+    );
+  }
 }
 
 async function deliverToUserWebhook(
@@ -187,12 +411,6 @@ async function deliverToUserWebhook(
     parsed = new URL(url);
     if (!/^https?:$/.test(parsed.protocol)) return;
   } catch {
-    return;
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-  if (isPrivateOrInternalHostname(hostname)) {
-    logger.warn(`[notify] blocked webhook to private/internal address: ${hostname}`);
     return;
   }
 
@@ -227,11 +445,11 @@ async function deliverToUserWebhook(
           new Blob([screenshot.bytes as any], { type: meta.contentType }),
           filename,
         );
-        await fetch(url, { method: "POST", body: form });
+        await fetchPublicHttpResponse(url, { method: "POST", body: form });
         return;
       }
 
-      await fetch(url, {
+      await fetchPublicHttpResponse(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -240,7 +458,7 @@ async function deliverToUserWebhook(
     }
 
     const body = buildWebhookBody(target, record);
-    await fetch(url, {
+    await fetchPublicHttpResponse(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body,
@@ -345,21 +563,26 @@ async function deliverWebPushToAll(
     url: "/notifications",
   });
 
-  await Promise.allSettled(
-    subs
-      .filter((sub) => allowedUserIds.has(sub.userId))
-      .map(async (sub) => {
-        const result = await sendWebPush(
-          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-          payload,
-        );
-        if (result.gone) {
-          deletePushSubscription(sub.endpoint);
-          logger.info(`[web-push] removed gone subscription for user ${sub.userId}`);
-        } else if (!result.success) {
-          logger.warn(`[web-push] delivery failed for user ${sub.userId}: ${result.error}`);
-        }
-      }),
+  const eligibleSubscriptions = subs.filter((sub) => allowedUserIds.has(sub.userId));
+  await settleInBoundedBatches(
+    eligibleSubscriptions,
+    async (sub) => {
+      const result = await sendWebPush(
+        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+        payload,
+      );
+      if (result.gone) {
+        deletePushSubscription(sub.endpoint);
+        logger.info(`[web-push] removed gone subscription for user ${sub.userId}`);
+      } else if (!result.success) {
+        logger.warn(`[web-push] delivery failed for user ${sub.userId}: ${result.error}`);
+      }
+    },
+    {
+      onError: (error, sub) => {
+        logger.warn(`[web-push] delivery threw for user ${sub.userId}`, error);
+      },
+    },
   );
 }
 
@@ -398,8 +621,9 @@ export async function deliverWebPushClientEvent(
     url: dest,
   });
 
-  await Promise.allSettled(
-    subs.map(async (sub) => {
+  await settleInBoundedBatches(
+    subs,
+    async (sub) => {
       const role = getUserRole(sub.userId);
       if (!role) return;
       if (isClientEventPushEnabled && !isClientEventPushEnabled(sub.userId)) return;
@@ -423,7 +647,12 @@ export async function deliverWebPushClientEvent(
       if (result.gone) {
         deletePushSubscription(sub.endpoint);
       }
-    }),
+    },
+    {
+      onError: (error, sub) => {
+        logger.warn(`[web-push] client-event delivery threw for user ${sub.userId}`, error);
+      },
+    },
   );
 }
 
@@ -434,7 +663,15 @@ export async function deliverNotificationWithScreenshot(
   const screenshot = await waitForNotificationScreenshot(record.id);
   const targets = getUserDeliveryTargets(record.clientId);
   await Promise.allSettled([
-    ...targets.map((t) => deliverToUser(t, record, screenshot)),
+    settleInBoundedBatches(
+      targets,
+      async (target) => deliverToUser(target, record, screenshot),
+      {
+        onError: (error, target) => {
+          logger.warn(`[notify] delivery threw for user ${target.username}`, error);
+        },
+      },
+    ),
     deliverWebPushToAll(record, getUserDeliveryTargets),
   ]);
 }
@@ -470,8 +707,9 @@ export async function deliverClientEventToExternalChannels(
   const label = CLIENT_EVENT_LABELS[event] || "Client Event";
   const ts = Date.now();
 
-  await Promise.allSettled(
-    targets.map(async (target) => {
+  await settleInBoundedBatches(
+    targets,
+    async (target) => {
       if (target.webhookEnabled && target.clientEventWebhook && target.webhookUrl) {
         const url = target.webhookUrl.trim();
         if (!url) return;
@@ -501,13 +739,13 @@ export async function deliverClientEventToExternalChannels(
               timestamp: new Date(ts).toISOString(),
             };
             const payload = { content: label, embeds: [embed] };
-            await fetch(url, {
+            await fetchPublicHttpResponse(url, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(payload),
             });
           } else {
-            await fetch(url, {
+            await fetchPublicHttpResponse(url, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -553,7 +791,12 @@ export async function deliverClientEventToExternalChannels(
           }
         }
       }
-    }),
+    },
+    {
+      onError: (error, target) => {
+        logger.warn(`[notify] client event delivery threw for user ${target.username}`, error);
+      },
+    },
   );
 }
 

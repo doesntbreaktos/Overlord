@@ -8,7 +8,12 @@ import { metrics } from "../metrics";
 import { encodeMessage } from "../protocol";
 import * as sessionManager from "../sessions/sessionManager";
 import type { SocketData } from "../sessions/types";
-import { deliverWebPushClientEvent, deliverClientEventToExternalChannels, type UserDeliveryTarget } from "./notification-delivery";
+import {
+  deliverWebPushClientEvent,
+  deliverClientEventToExternalChannels,
+  validateNotificationScreenshotPayload,
+  type UserDeliveryTarget,
+} from "./notification-delivery";
 
 type NotificationRecord = {
   id: string;
@@ -40,7 +45,7 @@ type AntiSpamState = {
   blockedUntil: number;
 };
 
-type PendingNotificationScreenshot = {
+export type PendingNotificationScreenshot = {
   notificationId: string;
   clientId: string;
   ts: number;
@@ -56,6 +61,95 @@ type NotificationConfigShape = {
   antiSpamWindowMs?: number;
   antiSpamCooldownMs?: number;
 };
+
+const MAX_NOTIFICATION_TITLE_LENGTH = 512;
+const MAX_NOTIFICATION_KEYWORD_LENGTH = 128;
+const MAX_NOTIFICATION_PROCESS_LENGTH = 256;
+const MAX_NOTIFICATION_PATH_LENGTH = 2_048;
+export const MAX_PENDING_NOTIFICATION_SCREENSHOTS = 1_000;
+export const MAX_PENDING_NOTIFICATION_SCREENSHOTS_PER_CLIENT = 2;
+const MAX_PENDING_NOTIFICATION_SCREENSHOT_AGE_MS = 30_000;
+
+// Exported for the audit regression tests that document the stricter event
+// policy we intentionally rolled back for plugin compatibility. These limits
+// are no longer applied to plugin traffic.
+export const MAX_PLUGIN_EVENT_PAYLOAD_BYTES = 256 * 1024;
+export const MAX_PLUGIN_EVENTS_PER_KEY_PER_MINUTE = 120;
+export const MAX_BUFFERED_PLUGIN_EVENT_BYTES_PER_KEY = 8 * 1024 * 1024;
+export const MAX_BUFFERED_PLUGIN_EVENT_BYTES_PER_CLIENT = 16 * 1024 * 1024;
+export const MAX_BUFFERED_PLUGIN_EVENT_BYTES_GLOBAL = 64 * 1024 * 1024;
+
+export function hasPluginUIEventBufferCapacity(
+  keyBytes: number,
+  clientBytes: number,
+  globalBytes: number,
+  incomingBytes: number,
+): boolean {
+  return incomingBytes >= 0
+    && keyBytes + incomingBytes <= MAX_BUFFERED_PLUGIN_EVENT_BYTES_PER_KEY
+    && clientBytes + incomingBytes <= MAX_BUFFERED_PLUGIN_EVENT_BYTES_PER_CLIENT
+    && globalBytes + incomingBytes <= MAX_BUFFERED_PLUGIN_EVENT_BYTES_GLOBAL;
+}
+
+export function isPlausibleChatAttachmentEventPayload(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const attachment = value as Record<string, unknown>;
+  const dataB64 = attachment.dataB64;
+  const mime = typeof attachment.mime === "string" ? attachment.mime.trim().toLowerCase() : "";
+  return typeof dataB64 === "string"
+    && dataB64.length > 0
+    && dataB64.length <= Math.ceil((5 * 1024 * 1024) / 3) * 4
+    && dataB64.length % 4 === 0
+    && /^[A-Za-z0-9+/]*={0,2}$/.test(dataB64)
+    && new Set(["image/png", "image/jpeg", "image/webp"]).has(mime);
+}
+
+export function hasPendingNotificationScreenshotCapacity(
+  pendingScreenshots: Map<string, PendingNotificationScreenshot>,
+  clientId: string,
+  now = Date.now(),
+): boolean {
+  let clientCount = 0;
+  for (const [commandId, pending] of pendingScreenshots) {
+    if (now - pending.ts > MAX_PENDING_NOTIFICATION_SCREENSHOT_AGE_MS) {
+      clearTimeout(pending.timeout);
+      pendingScreenshots.delete(commandId);
+      continue;
+    }
+    if (pending.clientId === clientId) clientCount += 1;
+  }
+  return pendingScreenshots.size < MAX_PENDING_NOTIFICATION_SCREENSHOTS
+    && clientCount < MAX_PENDING_NOTIFICATION_SCREENSHOTS_PER_CLIENT;
+}
+
+function sanitizeNotificationText(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+export function normalizeClientNotificationPayload(
+  payload: any,
+): Omit<NotificationRecord, "id" | "clientId" | "host" | "user" | "os" | "ts"> | null {
+  const title = sanitizeNotificationText(payload?.title, MAX_NOTIFICATION_TITLE_LENGTH);
+  if (!title) return null;
+
+  const rawPid = Number(payload?.pid);
+  const pid = Number.isSafeInteger(rawPid) && rawPid > 0 && rawPid <= 0xffff_ffff
+    ? rawPid
+    : undefined;
+
+  return {
+    title,
+    process: sanitizeNotificationText(payload?.process, MAX_NOTIFICATION_PROCESS_LENGTH),
+    processPath: sanitizeNotificationText(payload?.processPath, MAX_NOTIFICATION_PATH_LENGTH),
+    pid,
+    keyword: sanitizeNotificationText(payload?.keyword, MAX_NOTIFICATION_KEYWORD_LENGTH),
+    category: payload?.category === "clipboard" ? "clipboard" : "active_window",
+  };
+}
 
 type CreateDeps = {
   notificationRate: Map<string, NotificationRateState>;
@@ -100,6 +194,29 @@ function safeSendViewer(ws: ServerWebSocket<SocketData>, payload: unknown) {
 
 export function createNotificationPluginHandlers(deps: CreateDeps) {
   const antiSpamState = new Map<string, AntiSpamState>();
+  const purgatoryExternalRates = new Map<string, { windowStart: number; count: number }>();
+  let purgatoryGlobalRate = { windowStart: Date.now(), count: 0 };
+  function allowPurgatoryExternalDelivery(ip: string | undefined): boolean {
+    const now = Date.now();
+    const windowMs = 60_000;
+    if (now - purgatoryGlobalRate.windowStart >= windowMs) {
+      purgatoryGlobalRate = { windowStart: now, count: 0 };
+    }
+    const key = String(ip || "unknown");
+    let perIp = purgatoryExternalRates.get(key);
+    if (!perIp || now - perIp.windowStart >= windowMs) {
+      perIp = { windowStart: now, count: 0 };
+    }
+    purgatoryGlobalRate.count += 1;
+    perIp.count += 1;
+    purgatoryExternalRates.set(key, perIp);
+    if (purgatoryExternalRates.size > 10_000) {
+      for (const [rateKey, entry] of purgatoryExternalRates) {
+        if (now - entry.windowStart >= windowMs * 2) purgatoryExternalRates.delete(rateKey);
+      }
+    }
+    return purgatoryGlobalRate.count <= 20 && perIp.count <= 3;
+  }
 
   const pluginUIEventBuffer = new Map<string, Array<{ event: string; payload: any; ts: number }>>();
   const PLUGIN_UI_EVENT_BUFFER_MAX = 200;
@@ -123,13 +240,20 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
     const list = pluginUIEventBuffer.get(key);
     if (!list || list.length === 0) return [];
     const now = Date.now();
-    const fresh = list.filter((e) => now - e.ts < PLUGIN_UI_EVENT_TTL_MS);
+    const fresh = list.filter((entry) => now - entry.ts < PLUGIN_UI_EVENT_TTL_MS);
     pluginUIEventBuffer.delete(key);
     return fresh.map(({ event, payload }) => ({ event, payload }));
   }
 
   function requestNotificationScreenshot(info: any, record: NotificationRecord) {
     if (!info || !info.ws) return;
+    if (!hasPendingNotificationScreenshotCapacity(
+      deps.pendingNotificationScreenshots,
+      record.clientId,
+    )) {
+      logger.warn(`[notify] skipped screenshot request because the pending queue is full client=${record.clientId}`);
+      return;
+    }
     const commandId = `notify-shot-${uuidv4()}`;
     const timeout = setTimeout(() => {
       deps.pendingNotificationScreenshots.delete(commandId);
@@ -252,9 +376,10 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
         antiSpamState.delete(key);
       }
     }
+
   }
 
-  setInterval(pruneNotificationRate, 60_000);
+  setInterval(pruneNotificationRate, 60_000).unref?.();
 
   function flushPluginEvents(clientId: string, pluginId: string) {
     const key = `${clientId}:${pluginId}`;
@@ -315,34 +440,28 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
     },
 
     handleNotification(clientId: string, payload: any) {
-      const ts = Number(payload.ts) || Date.now();
-      const title = typeof payload.title === "string" ? payload.title : "";
-      if (!title) return;
-      const keyword = typeof payload.keyword === "string" ? payload.keyword : "";
-      const rateKey = `${clientId}:${keyword || title}`;
+      const normalized = normalizeClientNotificationPayload(payload);
+      if (!normalized) return;
+      const ts = Date.now();
+      const rateKey = clientId;
       if (!shouldAcceptNotification(rateKey, ts)) {
         return;
       }
-      const antiSpamKey = `${clientId}:${keyword || title}`;
+      const antiSpamKey = clientId;
       if (!checkAntiSpam(antiSpamKey, ts)) {
         return;
       }
       const info = clientManager.getClient(clientId);
-      const category: "active_window" | "clipboard" =
-        payload.category === "clipboard" ? "clipboard" : "active_window";
-      logger.info(`[notify] client=${clientId} keyword=${keyword || "-"} category=${category} title=${title}`);
+      logger.info(
+        `[notify] client=${clientId} keyword=${normalized.keyword || "-"} category=${normalized.category} title=${normalized.title}`,
+      );
       const record: NotificationRecord = {
         id: uuidv4(),
         clientId,
         host: info?.host,
         user: info?.user,
         os: info?.os,
-        title,
-        process: typeof payload.process === "string" ? payload.process : "",
-        processPath: typeof payload.processPath === "string" ? payload.processPath : "",
-        pid: Number(payload.pid) || undefined,
-        keyword,
-        category,
+        ...normalized,
         ts,
       };
 
@@ -350,11 +469,11 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
 
       const muted = deps.isClientNotificationsMuted(clientId);
 
-      requestNotificationScreenshot(info, record);
-
       if (muted) {
         return;
       }
+
+      requestNotificationScreenshot(info, record);
 
       for (const session of sessionManager.getAllNotificationSessions().values()) {
         const sRole = session.userRole ?? session.viewer.data.userRole ?? "";
@@ -376,11 +495,14 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
       clientId: string,
       crash: { reason: string; detail?: string; host?: string; user?: string; os?: string },
     ) {
-      const reason = String(crash.reason || "").trim();
+      const ts = Date.now();
+      if (!shouldAcceptNotification(clientId, ts) || !checkAntiSpam(clientId, ts)) return;
+
+      const reason = sanitizeNotificationText(crash.reason, 128);
       if (!reason) return;
 
       const info = clientManager.getClient(clientId);
-      const detail = String(crash.detail || "").trim();
+      const detail = sanitizeNotificationText(crash.detail, MAX_NOTIFICATION_PATH_LENGTH);
       const record: NotificationRecord = {
         id: uuidv4(),
         clientId,
@@ -393,7 +515,7 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
         detail,
         keyword: "crash",
         category: "crash_report",
-        ts: Date.now(),
+        ts,
       };
 
       logger.warn(`[notify] crash report client=${clientId} reason=${reason}`);
@@ -419,11 +541,22 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
       );
     },
 
-    handleNotificationScreenshotFailure(commandId?: string, ok?: boolean, message?: string) {
+    handleNotificationScreenshotFailure(
+      commandId?: string,
+      ok?: boolean,
+      message?: string,
+      clientId?: string,
+    ) {
       if (!commandId) return;
       if (ok === true) return;
       const pending = deps.pendingNotificationScreenshots.get(commandId);
       if (!pending) return;
+      if (!clientId || pending.clientId !== clientId) {
+        logger.warn(
+          `[notify] ignored screenshot failure from wrong client commandId=${commandId}`,
+        );
+        return;
+      }
       clearTimeout(pending.timeout);
       deps.pendingNotificationScreenshots.delete(commandId);
       if (message) {
@@ -436,6 +569,12 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
       if (!commandId) return;
       const pending = deps.pendingNotificationScreenshots.get(commandId);
       if (!pending) return;
+      if (pending.clientId !== clientId) {
+        logger.warn(
+          `[notify] ignored screenshot result for wrong client commandId=${commandId}`,
+        );
+        return;
+      }
       clearTimeout(pending.timeout);
       deps.pendingNotificationScreenshots.delete(commandId);
 
@@ -444,24 +583,18 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
         return;
       }
 
-      let bytes: Uint8Array | null = null;
-      if (payload.data instanceof Uint8Array) {
-        bytes = payload.data;
-      } else if (payload.data instanceof ArrayBuffer) {
-        bytes = new Uint8Array(payload.data);
-      } else if (ArrayBuffer.isView(payload.data)) {
-        bytes = new Uint8Array(payload.data.buffer);
-      }
-
-      if (!bytes || bytes.length === 0) {
-        logger.warn(`[notify] screenshot missing data commandId=${commandId}`);
+      const screenshot = validateNotificationScreenshotPayload(payload);
+      if (!screenshot) {
+        logger.warn(`[notify] rejected invalid screenshot commandId=${commandId}`);
         return;
       }
-
-      const format = typeof payload.format === "string" ? payload.format : "jpeg";
-      const width = Number(payload.width) || undefined;
-      const height = Number(payload.height) || undefined;
-      deps.storeNotificationScreenshot(pending, bytes, format, width, height);
+      deps.storeNotificationScreenshot(
+        pending,
+        screenshot.bytes,
+        screenshot.format,
+        screenshot.width,
+        screenshot.height,
+      );
     },
 
     clearPendingNotificationScreenshots(clientId: string) {
@@ -524,6 +657,14 @@ export function createNotificationPluginHandlers(deps: CreateDeps) {
           }
         }
         safeSendViewer(session.viewer, item);
+      }
+
+      // Keep browser viewers live, but prevent a leaked agent token from
+      // amplifying fresh-key enrollment floods into unbounded push/webhook/
+      // Telegram traffic.
+      if (event === "client_purgatory" && !allowPurgatoryExternalDelivery(info.ip)) {
+        logger.warn(`[notify] suppressed excessive purgatory external delivery from ${info.ip || "unknown"}`);
+        return;
       }
 
       const externalTargets = deps.getDeliveryTargetsForClientEvent(event, info.id);

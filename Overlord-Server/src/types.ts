@@ -20,6 +20,7 @@ export type ClientInfo = {
   online?: boolean;
   hwid?: string;
   ip?: string;
+  reportedPublicIp?: string;
   host?: string;
   os?: string;
   arch?: string;

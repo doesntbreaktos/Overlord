@@ -1,4 +1,5 @@
 import { encode, decode } from "@msgpack/msgpack";
+import { preflightMessagePack } from "./messagepack-preflight";
 import {
   getImplicitCommandVersion,
   isCommandType,
@@ -532,5 +533,6 @@ export function decodeMessage(
   if (typeof input === "string") {
     return JSON.parse(input) as WireMessage;
   }
+  preflightMessagePack(input);
   return decode(input) as WireMessage;
 }

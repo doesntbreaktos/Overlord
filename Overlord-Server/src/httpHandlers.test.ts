@@ -102,5 +102,6 @@ describe("handleClientsRequest", () => {
     expect(res.status).toBe(200);
     const ct = res.headers.get("content-type") || "";
     expect(ct).toContain("json");
+    expect(res.headers.get("access-control-allow-origin")).toBe("null");
   });
 });

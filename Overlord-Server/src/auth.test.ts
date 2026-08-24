@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { authenticateRequest, extractTokenFromCookie, extractTokenFromHeader, generateToken } from "./auth";
 import { getConfig, updateAppearanceConfig, type Config } from "./config";
 import { generateTotpCode } from "./mfa";
-import { getBrandingImage } from "./db";
+import { getBrandingImage, hashTokenForSession, revokeSessionByTokenHash } from "./db";
 import {
   createUser,
   deleteUser,
@@ -43,6 +43,27 @@ describe("auth token extraction", () => {
 
   test("extractTokenFromCookie returns null when missing", () => {
     expect(extractTokenFromCookie("foo=bar")).toBeNull();
+  });
+});
+
+describe("session-backed authentication", () => {
+  test("a revoked session invalidates HTTP authentication immediately", async () => {
+    const username = `session_revoke_${Date.now().toString(36)}`;
+    const created = await createUser(username, PASSWORD, "viewer", "test");
+    expect(created.success).toBe(true);
+
+    try {
+      const token = await generateToken(getUserById(created.userId!)!);
+      const request = new Request("https://localhost/api/auth/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect((await authenticateRequest(request))?.userId).toBe(created.userId!);
+
+      expect(revokeSessionByTokenHash(hashTokenForSession(token))).toBe(true);
+      expect(await authenticateRequest(request)).toBeNull();
+    } finally {
+      deleteUser(created.userId!);
+    }
   });
 });
 

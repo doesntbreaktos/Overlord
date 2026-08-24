@@ -60,8 +60,7 @@
                   <p class="mb-1.5 text-slate-300 font-medium">Downloading password-protected files:</p>
                   <p class="mb-1">Use the <code class="px-1 py-0.5 bg-slate-900 rounded text-rose-300">X-Download-Password</code> header:</p>
                   <pre class="mt-1 mb-2 p-2 bg-slate-900 rounded text-emerald-300 overflow-x-auto select-all">curl -H "X-Download-Password: yourpass" https://host/api/file-share/&lt;id&gt;/download -o file.ext</pre>
-                  <p class="mb-1">Or pass it as a query parameter:</p>
-                  <pre class="mt-1 p-2 bg-slate-900 rounded text-emerald-300 overflow-x-auto select-all">curl "https://host/api/file-share/&lt;id&gt;/download?password=yourpass" -o file.ext</pre>
+                  <p>Do not put the password in the URL; URLs can be retained in browser history and access logs.</p>
                 </div>
               </div>
               <div>

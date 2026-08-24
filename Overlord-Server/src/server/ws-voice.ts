@@ -5,6 +5,7 @@ import { encodeMessage } from "../protocol";
 import * as sessionManager from "../sessions/sessionManager";
 import type { SocketData, VoiceViewer } from "../sessions/types";
 import { canUserAccessClient } from "../users";
+import { safeSendViewerBytes } from "./ws-viewer-utils";
 
 function sendVoiceCommand(clientId: string, commandType: "voice_session_start" | "voice_session_stop" | "voice_downlink", payload: Record<string, unknown>) {
   const target = clientManager.getClient(clientId);
@@ -83,25 +84,20 @@ export function handleVoiceViewerMessage(ws: ServerWebSocket<SocketData>, raw: s
 }
 
 export function handleVoiceUplink(clientId: string, payload: any) {
+  if (typeof payload?.sessionId === "string" && payload.sessionId.length > 128) return;
   const sessionId = typeof payload?.sessionId === "string" ? payload.sessionId : "";
   const bytes = payload?.data instanceof Uint8Array
     ? payload.data
     : payload?.data instanceof ArrayBuffer
       ? new Uint8Array(payload.data)
       : ArrayBuffer.isView(payload?.data)
-        ? new Uint8Array(payload.data.buffer)
+        ? new Uint8Array(payload.data.buffer, payload.data.byteOffset, payload.data.byteLength)
         : null;
   if (!bytes || bytes.byteLength === 0) return;
 
   for (const session of sessionManager.getVoiceSessionsByClient(clientId)) {
-    if (sessionId) {
-      if (session.id !== sessionId) continue;
-    }
-    try {
-      session.viewer.send(bytes);
-    } catch {
-      // ignore failed sends; cleanup happens on close
-    }
+    if (sessionId && session.id !== sessionId) continue;
+    safeSendViewerBytes(session.viewer, bytes, undefined, "voice");
   }
 }
 

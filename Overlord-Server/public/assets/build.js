@@ -9,6 +9,7 @@ import {
   staggerChildren,
 } from "./motion.js";
 import { isLocalServerAddress } from "./build-server-url.js";
+import { escapeHtml } from "./format.js";
 
 const form = document.getElementById("build-form");
 const buildBtn = document.getElementById("build-btn");
@@ -2912,25 +2913,29 @@ if (buildUpdateAllBtn) {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        updateAllModalBody.innerHTML = `<p class="text-red-400"><i class="fa-solid fa-circle-xmark mr-2"></i>${data.error || "Failed to check eligible clients"}</p>`;
+        updateAllModalBody.innerHTML = `<p class="text-red-400"><i class="fa-solid fa-circle-xmark mr-2"></i>${escapeHtml(data.error || "Failed to check eligible clients")}</p>`;
         return;
       }
 
       const data = await res.json();
+      const eligible = Math.max(0, Math.trunc(Number(data.eligible) || 0));
+      const totalOnline = Math.max(0, Math.trunc(Number(data.totalOnline) || 0));
+      const skippedInMemory = Math.max(0, Math.trunc(Number(data.skippedInMemory) || 0));
+      const skippedNoMatch = Math.max(0, Math.trunc(Number(data.skippedNoMatch) || 0));
       let html = "";
 
-      html += `<p class="text-white"><i class="fa-solid fa-users mr-2 text-amber-400"></i><strong>${data.eligible}</strong> client(s) will receive the update after build.</p>`;
+      html += `<p class="text-white"><i class="fa-solid fa-users mr-2 text-amber-400"></i><strong>${eligible}</strong> client(s) will receive the update after build.</p>`;
       html += '<div class="mt-2 text-xs text-slate-400 space-y-1">';
-      html += `<p><i class="fa-solid fa-globe mr-1 text-blue-400"></i> ${data.totalOnline} total online client(s)</p>`;
-      if (data.skippedInMemory > 0) {
-        html += `<p><i class="fa-solid fa-memory mr-1 text-red-400"></i> ${data.skippedInMemory} client(s) will be skipped (running in-memory)</p>`;
+      html += `<p><i class="fa-solid fa-globe mr-1 text-blue-400"></i> ${totalOnline} total online client(s)</p>`;
+      if (skippedInMemory > 0) {
+        html += `<p><i class="fa-solid fa-memory mr-1 text-red-400"></i> ${skippedInMemory} client(s) will be skipped (running in-memory)</p>`;
       }
-      if (data.skippedNoMatch > 0) {
-        html += `<p><i class="fa-solid fa-ban mr-1 text-slate-500"></i> ${data.skippedNoMatch} client(s) will be skipped (no matching platform)</p>`;
+      if (skippedNoMatch > 0) {
+        html += `<p><i class="fa-solid fa-ban mr-1 text-slate-500"></i> ${skippedNoMatch} client(s) will be skipped (no matching platform)</p>`;
       }
       html += "</div>";
 
-      if (data.eligible === 0 && data.totalOnline === 0) {
+      if (eligible === 0 && totalOnline === 0) {
         html += '<p class="mt-3 text-xs text-slate-500">No clients are currently online. The build will still run but no updates will be sent.</p>';
       }
 
@@ -2939,7 +2944,8 @@ if (buildUpdateAllBtn) {
 
       updateAllModalBody.innerHTML = html;
     } catch (err) {
-      updateAllModalBody.innerHTML = `<p class="text-red-400"><i class="fa-solid fa-circle-xmark mr-2"></i>Error: ${err.message}</p>`;
+      const message = err instanceof Error ? err.message : String(err || "Unknown error");
+      updateAllModalBody.innerHTML = `<p class="text-red-400"><i class="fa-solid fa-circle-xmark mr-2"></i>Error: ${escapeHtml(message)}</p>`;
     }
   });
 }

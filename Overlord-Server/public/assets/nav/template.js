@@ -81,16 +81,45 @@ export const NAV_GROUPS = [
    TOPBAR — dropdown menus
    ────────────────────────────────────────────── */
 
+function escapeNavHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function safeNavHref(value) {
+  const href = String(value ?? "").trim();
+  if (!href.startsWith("/") || href.startsWith("//") || /[\u0000-\u001f\u007f]/.test(href)) {
+    return "#";
+  }
+  return escapeNavHtml(href);
+}
+
+function safeNavId(value) {
+  return String(value ?? "").replace(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 192);
+}
+
+function safeNavClassList(value) {
+  return String(value ?? "")
+    .split(/\s+/)
+    .filter((token) => /^[A-Za-z0-9_-]+$/.test(token))
+    .join(" ");
+}
+
 export function dropdownItem(child) {
   const hiddenCls = child.hidden ? " hidden" : "";
   const prefetchAttr = child.turboPrefetch === false ? ' data-turbo-prefetch="false"' : "";
   const badgeHtml = child.hasBadge
     ? `<span id="enrollment-badge" class="nav-dd-badge hidden"></span>`
     : "";
-  return `<a href="${child.href}" id="${child.linkId}"${prefetchAttr}
-      class="nav-dd-item${hiddenCls}" data-link-id="${child.linkId}">
-      <i class="fa-solid ${child.icon} ${child.iconColor} nav-dd-item-icon"></i>
-      <span>${child.label}</span>
+  const linkId = safeNavId(child.linkId);
+  return `<a href="${safeNavHref(child.href)}" id="${linkId}"${prefetchAttr}
+      class="nav-dd-item${hiddenCls}" data-link-id="${linkId}">
+      <i class="fa-solid ${safeNavClassList(child.icon)} ${safeNavClassList(child.iconColor)} nav-dd-item-icon"></i>
+      <span>${escapeNavHtml(child.label)}</span>
       ${badgeHtml}
     </a>`;
 }
@@ -241,10 +270,12 @@ export function sidebarChild(child) {
   const badgeHtml = child.hasBadge
     ? `<span id="enrollment-badge" class="sb-badge hidden"></span>`
     : "";
-  return `<a href="${child.href}" id="${child.linkId}"
-      class="sb-link sb-link-child${hiddenCls}" data-link-id="${child.linkId}" title="${child.label}">
-      <i class="fa-solid ${child.icon} ${child.iconColor} sb-icon"></i>
-      <span class="sb-text">${child.label}</span>
+  const linkId = safeNavId(child.linkId);
+  const label = escapeNavHtml(child.label);
+  return `<a href="${safeNavHref(child.href)}" id="${linkId}"
+      class="sb-link sb-link-child${hiddenCls}" data-link-id="${linkId}" title="${label}">
+      <i class="fa-solid ${safeNavClassList(child.icon)} ${safeNavClassList(child.iconColor)} sb-icon"></i>
+      <span class="sb-text">${label}</span>
       ${badgeHtml}
     </a>`;
 }

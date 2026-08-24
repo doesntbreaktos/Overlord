@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { metrics } from "./metrics";
+import { MAX_HTTP_METRIC_ROUTE_KEYS, metrics } from "./metrics";
 
 beforeEach(() => {
   metrics.reset();
@@ -150,6 +150,15 @@ describe("MetricsCollector", () => {
       expect(snap.http.routes.map((route) => route.route)).toEqual([
         "GET /api/clients",
       ]);
+    });
+
+    test("caps attacker-controlled HTTP route cardinality", () => {
+      for (let i = 0; i < MAX_HTTP_METRIC_ROUTE_KEYS + 200; i++) {
+        metrics.recordHttpRequest(i, 404, `GET /random-${i}`);
+      }
+
+      expect((metrics as any).httpRouteSamples.size).toBe(MAX_HTTP_METRIC_ROUTE_KEYS);
+      expect((metrics as any).httpRouteSamples.has("OTHER high-cardinality routes")).toBe(true);
     });
   });
 

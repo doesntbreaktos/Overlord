@@ -1,6 +1,12 @@
 (() => {
   const PLUGIN_ID = "chat";
-  const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
+  const MAX_ATTACHMENT_SIZE = 64 * 1024 * 1024;
+  const MAX_ATTACHMENT_BASE64_SIZE = Math.ceil(MAX_ATTACHMENT_SIZE / 3) * 4;
+  const SAFE_IMAGE_MIMES = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+  ]);
 
   const params = new URLSearchParams(window.location.search);
 
@@ -69,58 +75,119 @@
     });
   }
 
-  async function loadAttachmentBlob(id) {
+  async function loadAttachmentBlob(id, expectedMime) {
     if (attachmentUrlCache.has(id)) return attachmentUrlCache.get(id);
-    const { ok, result } = await rpc("get_attachment", { id });
-    if (!ok || !result?.dataB64) return null;
-    const bin = atob(result.dataB64);
+    const clientId = getClientId();
+    if (!clientId) return null;
+    const { ok, result } = await rpc("get_attachment", { id, clientId });
+    if (
+      !ok ||
+      !result?.ok ||
+      (SAFE_IMAGE_MIMES.has(expectedMime) && result.mime !== expectedMime) ||
+      typeof result.dataB64 !== "string" ||
+      result.dataB64.length === 0 ||
+      result.dataB64.length > MAX_ATTACHMENT_BASE64_SIZE
+    ) return null;
+    let bin;
+    try {
+      bin = atob(result.dataB64);
+    } catch {
+      return null;
+    }
+    if (bin.length === 0 || bin.length > MAX_ATTACHMENT_SIZE) return null;
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const blob = new Blob([bytes], {
-      type: result.mime || "application/octet-stream",
+      type: SAFE_IMAGE_MIMES.has(expectedMime) ? expectedMime : "application/octet-stream",
     });
     const url = URL.createObjectURL(blob);
+    if (attachmentUrlCache.size >= 10) {
+      const oldestId = attachmentUrlCache.keys().next().value;
+      const oldestUrl = attachmentUrlCache.get(oldestId);
+      if (oldestUrl) URL.revokeObjectURL(oldestUrl);
+      attachmentUrlCache.delete(oldestId);
+    }
     attachmentUrlCache.set(id, url);
     return url;
+  }
+
+  function showImagePreview(url, name) {
+    const overlay = document.createElement("div");
+    overlay.className = "chat-image-preview";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", `Image preview: ${name}`);
+
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "chat-image-preview-close";
+    close.setAttribute("aria-label", "Close image preview");
+    close.textContent = "×";
+
+    const image = document.createElement("img");
+    image.src = url;
+    image.alt = name;
+
+    const remove = () => {
+      document.removeEventListener("keydown", onKeyDown);
+      overlay.remove();
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") remove();
+    };
+    close.addEventListener("click", remove);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) remove();
+    });
+    document.addEventListener("keydown", onKeyDown);
+
+    overlay.append(image, close);
+    document.body.appendChild(overlay);
+    close.focus();
   }
 
   function renderAttachment(att, messageId) {
     const wrap = document.createElement("div");
     wrap.className = "chat-msg-attachment";
-    const isImage = (att.mime || "").startsWith("image/");
+    const mime = String(att?.mime || "").trim().toLowerCase();
+    const name = String(att?.name || "image").slice(0, 255);
+    const sizeValue = Number(att?.size);
+    const size = Number.isFinite(sizeValue) && sizeValue >= 0
+      ? Math.min(sizeValue, MAX_ATTACHMENT_SIZE)
+      : 0;
+    const isImage = SAFE_IMAGE_MIMES.has(mime) && size > 0 && size <= MAX_ATTACHMENT_SIZE;
 
     if (isImage) {
-      const img = document.createElement("img");
-      img.className = "chat-msg-image";
-      img.alt = att.name;
-      img.title = `${att.name} (${humanSize(att.size)})`;
-      loadAttachmentBlob(messageId).then((url) => {
-        if (url) img.src = url;
+      const view = document.createElement("button");
+      view.type = "button";
+      view.className = "chat-msg-file";
+      view.textContent = `View image: ${name} (${humanSize(size)})`;
+      view.addEventListener("click", async () => {
+        view.disabled = true;
+        const url = await loadAttachmentBlob(messageId, mime);
+        if (url) showImagePreview(url, name);
+        view.disabled = false;
       });
-      img.addEventListener("click", async () => {
-        const url = await loadAttachmentBlob(messageId);
-        if (url) window.open(url, "_blank");
-      });
-      wrap.appendChild(img);
+      wrap.appendChild(view);
     } else {
-      const link = document.createElement("a");
-      link.className = "chat-msg-file";
-      link.href = "#";
-      link.innerHTML = `<i class="fa-solid fa-file"></i> <span class="chat-msg-file-name"></span> <span class="chat-msg-file-size"></span>`;
-      link.querySelector(".chat-msg-file-name").textContent = att.name;
-      link.querySelector(".chat-msg-file-size").textContent = `(${humanSize(att.size)})`;
-      link.addEventListener("click", async (e) => {
-        e.preventDefault();
-        const url = await loadAttachmentBlob(messageId);
-        if (!url) return;
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = att.name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+      const download = document.createElement("button");
+      download.type = "button";
+      download.className = "chat-msg-file";
+      download.textContent = `Download: ${name} (${humanSize(size)})`;
+      download.addEventListener("click", async () => {
+        download.disabled = true;
+        const url = await loadAttachmentBlob(messageId, mime);
+        if (url) {
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = name;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+        }
+        download.disabled = false;
       });
-      wrap.appendChild(link);
+      wrap.appendChild(download);
     }
     return wrap;
   }
@@ -192,7 +259,11 @@
 
   function connectSSE() {
     if (sseStream) sseStream.close();
-    sseStream = new EventSource(`/api/plugins/${PLUGIN_ID}/stream`);
+    const clientId = getClientId();
+    if (!clientId) return;
+    sseStream = new EventSource(
+      `/api/plugins/${PLUGIN_ID}/stream?clientId=${encodeURIComponent(clientId)}`,
+    );
 
     sseStream.addEventListener("new_message", (e) => {
       const data = JSON.parse(e.data);
@@ -294,18 +365,23 @@
     btnAttach.disabled = true;
     try {
       const dataB64 = await readFileAsBase64(file);
-      const mime = file.type || "application/octet-stream";
-      await rpc("store_attachment", {
+      // Some platforms leave File.type blank for otherwise valid images. The
+      // server detects the real raster format and returns its canonical MIME.
+      const mime = file.type || "";
+      const stored = await rpc("store_attachment", {
         clientId: cid,
         sender,
         name: file.name,
         mime,
         dataB64,
       });
+      if (!stored.ok || !stored.result?.ok) {
+        throw new Error(stored.result?.error || stored.error || "Attachment rejected");
+      }
       await sendPluginEvent(cid, "chat_attachment", {
         from: sender,
-        name: file.name,
-        mime,
+        name: stored.result.name,
+        mime: stored.result.mime,
         dataB64,
       });
     } catch (err) {

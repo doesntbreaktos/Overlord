@@ -523,7 +523,10 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
                 state === "error" ? "Error" :
                   "Stopped");
 
-    statusEl.innerHTML = `${icons[state] || icons.idle} <span>${label}</span>`;
+    statusEl.innerHTML = icons[state] || icons.idle;
+    const labelEl = document.createElement("span");
+    labelEl.textContent = String(label || "");
+    statusEl.appendChild(labelEl);
 
     const wsOpen = ws && ws.readyState === WebSocket.OPEN;
     const streamLocked = streamState === "streaming" || streamState === "starting" || streamState === "stopping";

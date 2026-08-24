@@ -68,7 +68,10 @@ function setStatus(text, cls) {
   if (!statusPill) return;
   statusPill.className =
     "inline-flex items-center gap-2 px-3 py-1.5 rounded-full border " + cls;
-  statusPill.innerHTML = `<i class="fa-solid fa-circle"></i><span>${text}</span>`;
+  statusPill.innerHTML = '<i class="fa-solid fa-circle"></i>';
+  const label = document.createElement("span");
+  label.textContent = String(text || "");
+  statusPill.appendChild(label);
 }
 
 function downsampleTo16k(float32Buffer, sampleRate) {
@@ -537,7 +540,10 @@ function daSetStatus(text, cls) {
   if (!daStatusPill) return;
   daStatusPill.className =
     "inline-flex items-center gap-2 px-3 py-1.5 rounded-full border " + cls;
-  daStatusPill.innerHTML = `<i class="fa-solid fa-circle"></i><span>${text}</span>`;
+  daStatusPill.innerHTML = '<i class="fa-solid fa-circle"></i>';
+  const label = document.createElement("span");
+  label.textContent = String(text || "");
+  daStatusPill.appendChild(label);
 }
 
 function daClearPlayback() {

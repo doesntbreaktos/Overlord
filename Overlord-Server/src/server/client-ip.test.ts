@@ -6,7 +6,7 @@ import {
   wrapServerWithClientIp,
 } from "./client-ip";
 
-const ENV_KEYS = ["OVERLORD_TRUST_PROXY", "OVERLORD_TLS_OFFLOAD"] as const;
+const ENV_KEYS = ["OVERLORD_TRUST_PROXY", "OVERLORD_TLS_OFFLOAD", "OVERLORD_TRUSTED_PROXY_IPS"] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -55,11 +55,12 @@ describe("resolveForwardedIp - trust disabled", () => {
 describe("resolveForwardedIp - trust enabled", () => {
   beforeEach(() => {
     process.env.OVERLORD_TRUST_PROXY = "true";
+    process.env.OVERLORD_TRUSTED_PROXY_IPS = "172.17.0.1,172.18.0.1";
     resetTrustProxyCacheForTests();
   });
 
-  test("picks leftmost public IP from X-Forwarded-For", () => {
-    const req = makeReq({ "x-forwarded-for": "203.0.113.42, 10.0.0.1, 172.17.0.1" });
+  test("uses the rightmost forwarded address so prepended spoofing fails", () => {
+    const req = makeReq({ "x-forwarded-for": "198.51.100.250, 203.0.113.42" });
     expect(resolveForwardedIp(req, "172.17.0.1")).toBe("203.0.113.42");
   });
 
@@ -68,9 +69,9 @@ describe("resolveForwardedIp - trust enabled", () => {
     expect(resolveForwardedIp(req, "172.17.0.1")).toBe("203.0.113.99");
   });
 
-  test("falls back to leftmost when all hops are private", () => {
+  test("uses the rightmost address even when the client is private", () => {
     const req = makeReq({ "x-forwarded-for": "10.0.0.1, 172.17.0.1" });
-    expect(resolveForwardedIp(req, "172.17.0.1")).toBe("10.0.0.1");
+    expect(resolveForwardedIp(req, "172.17.0.1")).toBe("172.17.0.1");
   });
 
   test("honors X-Real-IP when no X-Forwarded-For", () => {
@@ -86,6 +87,30 @@ describe("resolveForwardedIp - trust enabled", () => {
   test("falls back to peer when no forwarded headers present", () => {
     const req = makeReq({});
     expect(resolveForwardedIp(req, "172.17.0.1")).toBe("172.17.0.1");
+  });
+
+  test("ignores spoofed forwarding headers from an untrusted public peer", () => {
+    const req = makeReq({ "x-forwarded-for": "1.2.3.4" });
+    expect(resolveForwardedIp(req, "203.0.113.200")).toBe("203.0.113.200");
+  });
+
+  test("does not implicitly trust every private-network peer", () => {
+    delete process.env.OVERLORD_TRUSTED_PROXY_IPS;
+    const req = makeReq({ "x-forwarded-for": "1.2.3.4" });
+    expect(resolveForwardedIp(req, "10.0.0.25")).toBe("10.0.0.25");
+  });
+
+  test("rejects non-IP X-Real-IP and CF-Connecting-IP values", () => {
+    expect(resolveForwardedIp(makeReq({ "x-real-ip": "attacker-key" }), "172.17.0.1"))
+      .toBe("172.17.0.1");
+    expect(resolveForwardedIp(makeReq({ "cf-connecting-ip": "not-an-ip" }), "172.17.0.1"))
+      .toBe("172.17.0.1");
+  });
+
+  test("accepts forwarding headers from an explicitly trusted public peer", () => {
+    process.env.OVERLORD_TRUSTED_PROXY_IPS = "203.0.113.200";
+    const req = makeReq({ "x-forwarded-for": "1.2.3.4" });
+    expect(resolveForwardedIp(req, "203.0.113.200")).toBe("1.2.3.4");
   });
 
   test("strips ports and IPv6 brackets", () => {
@@ -105,6 +130,7 @@ describe("resolveForwardedIp - trust enabled", () => {
 describe("wrapServerWithClientIp", () => {
   test("requestIP returns forwarded address when trust enabled", () => {
     process.env.OVERLORD_TRUST_PROXY = "true";
+    process.env.OVERLORD_TRUSTED_PROXY_IPS = "172.18.0.1";
     resetTrustProxyCacheForTests();
 
     let upgradeCalled = false;

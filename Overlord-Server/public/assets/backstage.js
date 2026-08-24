@@ -302,7 +302,10 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
                     state === "idle" ? "Stopped" :
                       "Connecting");
 
-      statusEl.innerHTML = `${icons[state] || icons.idle} <span>${label}</span>`;
+      statusEl.innerHTML = icons[state] || icons.idle;
+      const labelEl = document.createElement("span");
+      labelEl.textContent = String(label || "");
+      statusEl.appendChild(labelEl);
       const base = "inline-flex items-center gap-2 px-3 py-2 rounded-full border text-sm";
       const styles = {
         streaming: "bg-violet-900/40 text-violet-100 border-violet-700/70",
@@ -915,7 +918,7 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
   function escapeHtml(str) {
     const div = document.createElement("div");
     div.textContent = str;
-    return div.innerHTML;
+    return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
   function sendCmd(type, payload) {
@@ -2038,7 +2041,7 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
     const lookupBtn = document.getElementById("backstageLookupBtn");
     if (!resultsEl) return;
 
-    if (msg.done) {
+    if (msg?.done) {
       if (statusEl) {
         statusEl.innerHTML = '<i class="fa-solid fa-check mr-1 text-emerald-400"></i>Search complete';
         setTimeout(() => statusEl.classList.add("hidden"), 3000);
@@ -2053,23 +2056,31 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
       return;
     }
 
-    if (msg.path) {
+    const lookupPath = safeClientString(msg?.path, "", 32768);
+    if (lookupPath) {
       // Remove placeholder if present
       const placeholder = resultsEl.querySelector(":scope > div:not([data-lookup-path])");
       if (placeholder) placeholder.remove();
 
       const item = document.createElement("button");
       item.type = "button";
-      item.dataset.lookupPath = msg.path;
+      item.dataset.lookupPath = lookupPath;
       item.className = "w-full text-left px-2 py-1.5 rounded text-xs text-slate-200 hover:bg-violet-600/30 hover:text-violet-100 transition-colors font-mono truncate block";
-      item.textContent = msg.path;
-      item.title = "Click to start in backstage: " + msg.path;
+      item.textContent = lookupPath;
+      item.title = "Click to start in backstage: " + lookupPath;
       item.addEventListener("click", () => {
         const killCheckbox = document.getElementById("backstageLookupKill");
-        const killExe = killCheckbox?.checked ? msg.exe : "";
-        sendCmd("backstage_start_process", { path: '"' + msg.path + '"', kill_exe: killExe });
+        const killExe = killCheckbox?.checked
+          ? safeClientString(msg?.exe, "", 1024)
+          : "";
+        sendCmd("backstage_start_process", { path: '"' + lookupPath + '"', kill_exe: killExe });
         item.classList.add("text-emerald-400");
-        item.innerHTML = '<i class="fa-solid fa-check mr-1"></i>' + (killExe ? '(killed) ' : '') + msg.path;
+        const icon = document.createElement("i");
+        icon.className = "fa-solid fa-check mr-1";
+        item.replaceChildren(
+          icon,
+          document.createTextNode((killExe ? "(killed) " : "") + lookupPath),
+        );
       });
       resultsEl.appendChild(item);
       item.scrollIntoView({ block: "nearest" });
@@ -2096,12 +2107,144 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
     "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1",
   ];
 
+  const WINDOW_MAP_MAX_MONITORS = 64;
+  const WINDOW_MAP_MAX_WINDOWS = 2000;
+  const WINDOW_MAP_MAX_COORDINATE = 1000000;
+  const WINDOW_MAP_MAX_DIMENSION = 100000;
+
+  function safeClientString(value, fallback = "", maxLength = 1024) {
+    let text;
+    try {
+      text = String(value ?? fallback);
+    } catch {
+      text = String(fallback);
+    }
+    return text.slice(0, maxLength);
+  }
+
+  function boundedClientNumber(value, min, max, fallback = 0) {
+    let number;
+    try {
+      number = Number(value);
+    } catch {
+      return fallback;
+    }
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(max, Math.max(min, number));
+  }
+
+  function boundedClientInteger(value, min, max, fallback = 0) {
+    return Math.trunc(boundedClientNumber(value, min, max, fallback));
+  }
+
+  function normalizeWindowMapPayload(msg) {
+    const monitorValues = Array.isArray(msg?.monitors)
+      ? msg.monitors.slice(0, WINDOW_MAP_MAX_MONITORS)
+      : [];
+    const windowValues = Array.isArray(msg?.windows)
+      ? msg.windows.slice(0, WINDOW_MAP_MAX_WINDOWS)
+      : [];
+
+    const monitors = monitorValues.map((value, position) => {
+      const monitor = value && typeof value === "object" ? value : {};
+      return {
+        index: boundedClientInteger(
+          monitor.index,
+          -WINDOW_MAP_MAX_COORDINATE,
+          WINDOW_MAP_MAX_COORDINATE,
+          position,
+        ),
+        name: safeClientString(monitor.name, "", 1024),
+        x: boundedClientNumber(
+          monitor.x,
+          -WINDOW_MAP_MAX_COORDINATE,
+          WINDOW_MAP_MAX_COORDINATE,
+        ),
+        y: boundedClientNumber(
+          monitor.y,
+          -WINDOW_MAP_MAX_COORDINATE,
+          WINDOW_MAP_MAX_COORDINATE,
+        ),
+        width: boundedClientNumber(
+          monitor.width,
+          0,
+          WINDOW_MAP_MAX_DIMENSION,
+        ),
+        height: boundedClientNumber(
+          monitor.height,
+          0,
+          WINDOW_MAP_MAX_DIMENSION,
+        ),
+        primary: monitor.primary === true,
+      };
+    });
+
+    const windows = windowValues.map((value) => {
+      const windowValue = value && typeof value === "object" ? value : {};
+      return {
+        title: safeClientString(windowValue.title, "", 2048),
+        processName: safeClientString(windowValue.processName, "", 1024),
+        pid: boundedClientInteger(windowValue.pid, 0, 0xffffffff, 0),
+        x: boundedClientNumber(
+          windowValue.x,
+          -WINDOW_MAP_MAX_COORDINATE,
+          WINDOW_MAP_MAX_COORDINATE,
+        ),
+        y: boundedClientNumber(
+          windowValue.y,
+          -WINDOW_MAP_MAX_COORDINATE,
+          WINDOW_MAP_MAX_COORDINATE,
+        ),
+        width: boundedClientNumber(
+          windowValue.width,
+          0,
+          WINDOW_MAP_MAX_DIMENSION,
+        ),
+        height: boundedClientNumber(
+          windowValue.height,
+          0,
+          WINDOW_MAP_MAX_DIMENSION,
+        ),
+        monitor: boundedClientInteger(
+          windowValue.monitor,
+          -1,
+          WINDOW_MAP_MAX_MONITORS - 1,
+          -1,
+        ),
+      };
+    });
+
+    return { monitors, windows };
+  }
+
+  function setWindowMapPlaceholder(element, text, { canvas = false, spinner = false } = {}) {
+    if (!element) return;
+    const wrapper = document.createElement("div");
+    wrapper.className = canvas
+      ? "flex items-center justify-center h-40 text-slate-500 text-sm"
+      : "text-slate-500 text-xs text-center py-2";
+    if (spinner) {
+      const icon = document.createElement("i");
+      icon.className = "fa-solid fa-spinner fa-spin mr-2";
+      wrapper.appendChild(icon);
+    }
+    wrapper.appendChild(document.createTextNode(text));
+    element.replaceChildren(wrapper);
+  }
+
+  function createWindowMapSpan(className, text = "") {
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = safeClientString(text, "", 4096);
+    return span;
+  }
+
   function openWindowMap() {
     if (!windowMapModal) return;
     windowMapModal.style.display = "flex";
     sendCmd("backstage_window_list", {});
-    if (windowMapCanvas) windowMapCanvas.innerHTML = '<div class="flex items-center justify-center h-40 text-slate-500 text-sm"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Loading…</div>';
-    if (windowMapList) windowMapList.innerHTML = "";
+    setWindowMapPlaceholder(windowMapCanvas, "Loading…", { canvas: true, spinner: true });
+    windowMapList?.replaceChildren();
   }
 
   function closeWindowMap() {
@@ -2112,22 +2255,21 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
   if (windowMapCloseBtn) windowMapCloseBtn.addEventListener("click", closeWindowMap);
   if (windowMapRefreshBtn) windowMapRefreshBtn.addEventListener("click", () => {
     sendCmd("backstage_window_list", {});
-    if (windowMapCanvas) windowMapCanvas.innerHTML = '<div class="flex items-center justify-center h-40 text-slate-500 text-sm"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Refreshing…</div>';
-    if (windowMapList) windowMapList.innerHTML = "";
+    setWindowMapPlaceholder(windowMapCanvas, "Refreshing…", { canvas: true, spinner: true });
+    windowMapList?.replaceChildren();
   });
   if (windowMapModal) windowMapModal.addEventListener("click", (e) => {
     if (e.target === windowMapModal) closeWindowMap();
   });
 
   function handleWindowListResult(msg) {
-    const monitors = msg.monitors || [];
-    const windows = msg.windows || [];
+    const { monitors, windows } = normalizeWindowMapPayload(msg);
 
     if (!windowMapCanvas || !windowMapList) return;
 
     if (monitors.length === 0 && windows.length === 0) {
-      windowMapCanvas.innerHTML = '<div class="flex items-center justify-center h-40 text-slate-500 text-sm">No windows or monitors found</div>';
-      windowMapList.innerHTML = '<div class="text-slate-500 text-xs text-center py-2">No visible windows on the hidden desktop</div>';
+      setWindowMapPlaceholder(windowMapCanvas, "No windows or monitors found", { canvas: true });
+      setWindowMapPlaceholder(windowMapList, "No visible windows on the hidden desktop");
       return;
     }
 
@@ -2159,58 +2301,116 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
     function ty(y) { return padY + (y - minY) * scale; }
     function tw(w) { return w * scale; }
 
-    let html = "";
     windowMapCanvas.style.height = mapH + "px";
+    const canvasFragment = document.createDocumentFragment();
 
     for (let i = 0; i < monitors.length; i++) {
       const m = monitors[i];
       const x = tx(m.x), y = ty(m.y), w = tw(m.width), h = tw(m.height);
-      html += `<div class="absolute border-2 border-dashed border-slate-600 rounded" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;" title="Monitor ${m.index}: ${m.name} (${m.width}x${m.height})">
-        <span class="absolute top-1 left-1.5 text-[10px] font-mono text-slate-500">${m.primary ? "★ " : ""}${m.name || "Monitor " + m.index}</span>
-        <span class="absolute bottom-1 right-1.5 text-[10px] font-mono text-slate-600">${m.width}×${m.height}</span>
-      </div>`;
+      const monitorBox = document.createElement("div");
+      monitorBox.className = "absolute border-2 border-dashed border-slate-600 rounded";
+      monitorBox.style.left = `${x}px`;
+      monitorBox.style.top = `${y}px`;
+      monitorBox.style.width = `${w}px`;
+      monitorBox.style.height = `${h}px`;
+      monitorBox.title = `Monitor ${m.index}: ${m.name} (${m.width}x${m.height})`;
+      monitorBox.append(
+        createWindowMapSpan(
+          "absolute top-1 left-1.5 text-[10px] font-mono text-slate-500",
+          `${m.primary ? "★ " : ""}${m.name || "Monitor " + m.index}`,
+        ),
+        createWindowMapSpan(
+          "absolute bottom-1 right-1.5 text-[10px] font-mono text-slate-600",
+          `${m.width}×${m.height}`,
+        ),
+      );
+      canvasFragment.appendChild(monitorBox);
     }
 
     for (let i = 0; i < windows.length; i++) {
-      const w = windows[i];
+      const mappedWindow = windows[i];
       const color = WINDOW_COLORS[i % WINDOW_COLORS.length];
-      const x = tx(w.x), y = ty(w.y), ww = Math.max(tw(w.width), 8), wh = Math.max(tw(w.height), 8);
-      const shortTitle = w.title.length > 30 ? w.title.slice(0, 28) + "…" : w.title;
-      html += `<div class="absolute rounded border overflow-hidden cursor-default" style="left:${x}px;top:${y}px;width:${ww}px;height:${wh}px;border-color:${color};background:${color}18;" title="${escHtml(w.title)}\n${w.processName} (PID ${w.pid})\nPosition: ${w.x},${w.y} Size: ${w.width}×${w.height}\nMonitor: ${w.monitor >= 0 ? w.monitor : "none"}">
-        ${wh > 20 && ww > 50 ? `<div class="px-1 py-0.5 text-[9px] font-mono text-slate-200 truncate" style="background:${color}50;">${escHtml(shortTitle)}</div>` : ""}
-      </div>`;
+      const x = tx(mappedWindow.x), y = ty(mappedWindow.y);
+      const width = Math.max(tw(mappedWindow.width), 8);
+      const height = Math.max(tw(mappedWindow.height), 8);
+      const shortTitle = mappedWindow.title.length > 30
+        ? mappedWindow.title.slice(0, 28) + "…"
+        : mappedWindow.title;
+      const windowBox = document.createElement("div");
+      windowBox.className = "absolute rounded border overflow-hidden cursor-default";
+      windowBox.style.left = `${x}px`;
+      windowBox.style.top = `${y}px`;
+      windowBox.style.width = `${width}px`;
+      windowBox.style.height = `${height}px`;
+      windowBox.style.borderColor = color;
+      windowBox.style.background = `${color}18`;
+      windowBox.title = [
+        mappedWindow.title,
+        `${mappedWindow.processName} (PID ${mappedWindow.pid})`,
+        `Position: ${mappedWindow.x},${mappedWindow.y} Size: ${mappedWindow.width}×${mappedWindow.height}`,
+        `Monitor: ${mappedWindow.monitor >= 0 ? mappedWindow.monitor : "none"}`,
+      ].join("\n");
+      if (height > 20 && width > 50) {
+        const title = document.createElement("div");
+        title.className = "px-1 py-0.5 text-[9px] font-mono text-slate-200 truncate";
+        title.style.background = `${color}50`;
+        title.textContent = shortTitle;
+        windowBox.appendChild(title);
+      }
+      canvasFragment.appendChild(windowBox);
     }
 
-    windowMapCanvas.innerHTML = html;
-
-    let listHtml = `<div class="grid gap-1">
-      <div class="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-3 px-2 py-1 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-800">
-        <span></span><span>Title</span><span>Process</span><span>Position</span><span>Monitor</span>
-      </div>`;
-
-    for (let i = 0; i < windows.length; i++) {
-      const w = windows[i];
-      const color = WINDOW_COLORS[i % WINDOW_COLORS.length];
-      const monLabel = w.monitor >= 0 ? (monitors[w.monitor] ? (monitors[w.monitor].name || "#" + w.monitor) : "#" + w.monitor) : "—";
-      listHtml += `<div class="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-3 items-center px-2 py-1.5 rounded hover:bg-slate-800/50 text-xs text-slate-300">
-        <span class="w-2.5 h-2.5 rounded-sm" style="background:${color};"></span>
-        <span class="truncate font-medium" title="${escHtml(w.title)}">${escHtml(w.title)}</span>
-        <span class="font-mono text-slate-400">${escHtml(w.processName)} <span class="text-slate-600">(${w.pid})</span></span>
-        <span class="font-mono text-slate-500">${w.x},${w.y} ${w.width}×${w.height}</span>
-        <span class="font-mono ${w.monitor >= 0 ? "text-slate-300" : "text-rose-400"}">${monLabel}</span>
-      </div>`;
-    }
-    listHtml += "</div>";
+    windowMapCanvas.replaceChildren(canvasFragment);
 
     if (windows.length === 0) {
-      listHtml = '<div class="text-slate-500 text-xs text-center py-2">No visible windows on the hidden desktop</div>';
+      setWindowMapPlaceholder(windowMapList, "No visible windows on the hidden desktop");
+      return;
     }
 
-    windowMapList.innerHTML = listHtml;
-  }
+    const list = document.createElement("div");
+    list.className = "grid gap-1";
+    const header = document.createElement("div");
+    header.className = "grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-3 px-2 py-1 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-800";
+    header.append(
+      createWindowMapSpan("", ""),
+      createWindowMapSpan("", "Title"),
+      createWindowMapSpan("", "Process"),
+      createWindowMapSpan("", "Position"),
+      createWindowMapSpan("", "Monitor"),
+    );
+    list.appendChild(header);
 
-  function escHtml(s) {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    for (let i = 0; i < windows.length; i++) {
+      const mappedWindow = windows[i];
+      const color = WINDOW_COLORS[i % WINDOW_COLORS.length];
+      const monitorLabel = mappedWindow.monitor >= 0
+        ? (monitors[mappedWindow.monitor]?.name || `#${mappedWindow.monitor}`)
+        : "—";
+      const row = document.createElement("div");
+      row.className = "grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-3 items-center px-2 py-1.5 rounded hover:bg-slate-800/50 text-xs text-slate-300";
+
+      const colorMarker = createWindowMapSpan("w-2.5 h-2.5 rounded-sm", "");
+      colorMarker.style.background = color;
+      const title = createWindowMapSpan("truncate font-medium", mappedWindow.title);
+      title.title = mappedWindow.title;
+      const process = createWindowMapSpan("font-mono text-slate-400", mappedWindow.processName + " ");
+      process.appendChild(createWindowMapSpan("text-slate-600", `(${mappedWindow.pid})`));
+      row.append(
+        colorMarker,
+        title,
+        process,
+        createWindowMapSpan(
+          "font-mono text-slate-500",
+          `${mappedWindow.x},${mappedWindow.y} ${mappedWindow.width}×${mappedWindow.height}`,
+        ),
+        createWindowMapSpan(
+          `font-mono ${mappedWindow.monitor >= 0 ? "text-slate-300" : "text-rose-400"}`,
+          monitorLabel,
+        ),
+      );
+      list.appendChild(row);
+    }
+    windowMapList.replaceChildren(list);
   }
 
   connectWs();

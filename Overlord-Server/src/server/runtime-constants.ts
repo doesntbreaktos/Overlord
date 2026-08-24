@@ -11,9 +11,5 @@ export const STALE_MS = positiveIntEnv("OVERLORD_STALE_MS", 90_000);
 export const DISCONNECT_TIMEOUT_MS = positiveIntEnv("OVERLORD_DISCONNECT_TIMEOUT_MS", 10_000);
 
 export const PRUNE_BATCH = Number(process.env.PRUNE_BATCH || 500);
-export const MAX_WS_MESSAGE_BYTES_VIEWER = Number(
-  process.env.MAX_WS_MESSAGE_BYTES_VIEWER || 1_000_000,
-);
-export const MAX_WS_MESSAGE_BYTES_CLIENT = Number(
-  process.env.MAX_WS_MESSAGE_BYTES_CLIENT || 64_000_000,
-);
+export const MAX_WS_MESSAGE_BYTES_VIEWER = positiveIntEnv("MAX_WS_MESSAGE_BYTES_VIEWER", 64_000_000);
+export const MAX_WS_MESSAGE_BYTES_CLIENT = positiveIntEnv("MAX_WS_MESSAGE_BYTES_CLIENT", 256_000_000);

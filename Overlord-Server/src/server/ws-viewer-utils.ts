@@ -1,8 +1,13 @@
 import type { ServerWebSocket } from "bun";
 import { decode as msgpackDecode, encode as msgpackEncode } from "@msgpack/msgpack";
 import { logger } from "../logger";
+import { preflightMessagePack } from "../messagepack-preflight";
 import { metrics } from "../metrics";
 import type { SocketData } from "../sessions/types";
+
+export const MAX_VIEWER_MESSAGE_BYTES = 256 * 1024 * 1024;
+export const MAX_VIEWER_BUFFERED_BYTES = 64 * 1024 * 1024;
+export const MAX_VIEWER_AUDIO_CHUNK_BYTES = 16 * 1024 * 1024;
 
 export function decodeViewerPayload(raw: string | ArrayBuffer | Uint8Array): any | null {
   if (typeof raw === "string") {
@@ -14,6 +19,7 @@ export function decodeViewerPayload(raw: string | ArrayBuffer | Uint8Array): any
   }
   try {
     const buf = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+    preflightMessagePack(buf);
     return msgpackDecode(buf);
   } catch {
     return null;
@@ -24,11 +30,45 @@ export function safeSendViewer(
   ws: ServerWebSocket<SocketData>,
   payload: unknown,
   logContext = "viewer",
-) {
+): boolean {
   try {
-    ws.send(msgpackEncode(payload));
+    if ((ws.getBufferedAmount?.() ?? 0) > MAX_VIEWER_BUFFERED_BYTES) {
+      logger.debug(`[${logContext}] dropped viewer message due to backpressure`);
+      return false;
+    }
+    const encoded = msgpackEncode(payload);
+    if (encoded.byteLength > MAX_VIEWER_MESSAGE_BYTES) {
+      logger.debug(`[${logContext}] dropped oversized viewer message (${encoded.byteLength} bytes)`);
+      return false;
+    }
+    ws.send(encoded);
+    return true;
   } catch (err) {
     logger.error(`[${logContext}] viewer send failed`, err);
+    return false;
+  }
+}
+
+export function safeSendViewerBytes(
+  ws: ServerWebSocket<SocketData>,
+  bytes: Uint8Array,
+  maxBytes = MAX_VIEWER_AUDIO_CHUNK_BYTES,
+  logContext = "viewer-binary",
+): boolean {
+  try {
+    if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) {
+      logger.debug(`[${logContext}] dropped invalid viewer binary chunk (${bytes.byteLength} bytes)`);
+      return false;
+    }
+    if ((ws.getBufferedAmount?.() ?? 0) > MAX_VIEWER_BUFFERED_BYTES) {
+      logger.debug(`[${logContext}] dropped viewer binary chunk due to backpressure`);
+      return false;
+    }
+    ws.send(bytes);
+    return true;
+  } catch (err) {
+    logger.error(`[${logContext}] viewer binary send failed`, err);
+    return false;
   }
 }
 

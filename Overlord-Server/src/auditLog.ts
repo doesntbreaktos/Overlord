@@ -10,7 +10,12 @@ const db = new Database(dbPath);
 const auditQueue: AuditLogEntry[] = [];
 const BATCH_SIZE = 50;
 const BATCH_INTERVAL_MS = 1000;
+export const DEFAULT_AUDIT_MAX_ROWS = 250_000;
+export const MAX_AUDIT_PRUNE_BATCH = 50_000;
+const AUDIT_MAINTENANCE_EVERY_WRITES = 1_000;
+const AUDIT_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
 let flushTimeout: Timer | null = null;
+let auditWritesSinceMaintenance = 0;
 
 const VERBOSE_AUDIT = process.env.VERBOSE_AUDIT === "true";
 
@@ -117,16 +122,46 @@ export interface AuditLogFilters {
   deniedClientIds?: string[];
 }
 
+function positiveAuditInt(name: string, fallback: number, maximum: number): number {
+  const parsed = Number(process.env[name]);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, maximum);
+}
+
+function boundedAuditText(value: unknown, maxLength: number): string {
+  return typeof value === "string"
+    ? value.slice(0, maxLength).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    : "";
+}
+
+function normalizeAuditEntry(entry: AuditLogEntry): AuditLogEntry {
+  return {
+    timestamp: Number.isFinite(entry.timestamp) ? entry.timestamp : Date.now(),
+    username: boundedAuditText(entry.username, 128) || "unknown",
+    ip: boundedAuditText(entry.ip, 128) || "unknown",
+    action: boundedAuditText(entry.action, 128) || "unknown",
+    ...(entry.targetClientId
+      ? { targetClientId: boundedAuditText(entry.targetClientId, 128) || undefined }
+      : {}),
+    ...(entry.details ? { details: boundedAuditText(entry.details, 16 * 1024) || undefined } : {}),
+    success: entry.success === true,
+    ...(entry.errorMessage
+      ? { errorMessage: boundedAuditText(entry.errorMessage, 4 * 1024) || undefined }
+      : {}),
+  };
+}
+
 export function logAudit(entry: AuditLogEntry): void {
-  auditQueue.push(entry);
+  const normalized = normalizeAuditEntry(entry);
+  auditQueue.push(normalized);
 
   if (VERBOSE_AUDIT) {
-    const status = entry.success ? "✓" : "✗";
-    const target = entry.targetClientId
-      ? ` [client: ${entry.targetClientId.substring(0, 8)}...]`
+    const status = normalized.success ? "✓" : "✗";
+    const target = normalized.targetClientId
+      ? ` [client: ${normalized.targetClientId.substring(0, 8)}...]`
       : "";
     console.log(
-      `[audit] ${status} ${entry.username}@${entry.ip} - ${entry.action}${target}`,
+      `[audit] ${status} ${normalized.username}@${normalized.ip} - ${normalized.action}${target}`,
     );
   }
 
@@ -170,6 +205,11 @@ function flushAuditLogs(): void {
     });
 
     transaction(logsToWrite);
+    auditWritesSinceMaintenance += logsToWrite.length;
+    if (auditWritesSinceMaintenance >= AUDIT_MAINTENANCE_EVERY_WRITES) {
+      auditWritesSinceMaintenance = 0;
+      runAuditMaintenance();
+    }
     metrics.recordInternalTask("audit-flush", Date.now() - startedAt);
   } catch (error) {
     console.error(
@@ -358,6 +398,52 @@ export function cleanupOldAuditLogs(daysToKeep: number = 90): number {
 
   return deleted;
 }
+
+export function pruneAuditRowsToLimit(
+  database: Database,
+  maxRows: number,
+  maxBatch = MAX_AUDIT_PRUNE_BATCH,
+): number {
+  const safeMaxRows = Math.max(1, Math.floor(maxRows));
+  const safeBatch = Math.max(1, Math.floor(maxBatch));
+  const total = Number(
+    (database.query("SELECT COUNT(*) AS count FROM audit_logs").get() as { count?: number } | null)?.count || 0,
+  );
+  const deleteCount = Math.min(safeBatch, Math.max(0, total - safeMaxRows));
+  if (deleteCount === 0) return 0;
+  return database.run(
+    `DELETE FROM audit_logs WHERE id IN (
+       SELECT id FROM audit_logs ORDER BY timestamp ASC, id ASC LIMIT ?
+     )`,
+    [deleteCount],
+  ).changes;
+}
+
+export function runAuditMaintenance(): void {
+  try {
+    const retentionSetting = String(process.env.OVERLORD_AUDIT_RETENTION_DAYS || "").trim();
+    if (retentionSetting) {
+      cleanupOldAuditLogs(positiveAuditInt("OVERLORD_AUDIT_RETENTION_DAYS", 90, 3_650));
+    }
+    const maxRowsSetting = String(process.env.OVERLORD_AUDIT_MAX_ROWS || "").trim();
+    if (maxRowsSetting) {
+      const maxRows = positiveAuditInt(
+        "OVERLORD_AUDIT_MAX_ROWS",
+        DEFAULT_AUDIT_MAX_ROWS,
+        10_000_000,
+      );
+      const deleted = pruneAuditRowsToLimit(db, maxRows);
+      if (deleted > 0) {
+        console.log(`[audit] Pruned ${deleted} oldest rows to enforce the ${maxRows} row cap`);
+      }
+    }
+  } catch (error) {
+    console.error("[audit] Maintenance failed:", error);
+  }
+}
+
+setTimeout(runAuditMaintenance, 5_000).unref?.();
+setInterval(runAuditMaintenance, AUDIT_MAINTENANCE_INTERVAL_MS).unref?.();
 
 process.on("beforeExit", () => {
   flushAuditLogs();

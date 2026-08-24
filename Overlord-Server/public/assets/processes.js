@@ -75,7 +75,8 @@ function updateStatus(state, text) {
     disconnected: '<i class="fa-solid fa-circle text-slate-500"></i>',
   };
 
-  statusEl.innerHTML = `${icons[state] || icons.disconnected} ${text}`;
+  statusEl.innerHTML = icons[state] || icons.disconnected;
+  statusEl.appendChild(document.createTextNode(` ${String(text || "")}`));
   const stateClasses = {
     connected: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
     error: "bg-red-500/10 text-red-300 border-red-500/30",
@@ -491,7 +492,7 @@ function formatBytes(bytes) {
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 // Context menu

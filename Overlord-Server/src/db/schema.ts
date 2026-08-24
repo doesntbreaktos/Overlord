@@ -437,6 +437,9 @@ db.run(
 db.run(
   `CREATE INDEX IF NOT EXISTS idx_notification_screenshots_ts ON notification_screenshots(ts DESC);`,
 );
+db.run(
+  `CREATE INDEX IF NOT EXISTS idx_notification_screenshots_client_ts ON notification_screenshots(client_id, ts);`,
+);
 
 db.run(`
   CREATE TABLE IF NOT EXISTS notifications (

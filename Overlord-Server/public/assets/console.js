@@ -106,7 +106,8 @@ function tryFit() {
 function setStatus(label, tone = "pill-offline") {
   if (!statusPill) return;
   statusPill.className = `pill ${tone}`;
-  statusPill.innerHTML = `<i class="fa-solid fa-circle"></i> ${label}`;
+  statusPill.innerHTML = '<i class="fa-solid fa-circle"></i>';
+  statusPill.appendChild(document.createTextNode(` ${String(label || "")}`));
 }
 
 function writeSystem(msg) {

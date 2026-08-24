@@ -1,9 +1,56 @@
 package runtime
 
 import (
+	"sync"
 	"testing"
 	"time"
+
+	"overlord-client/cmd/agent/config"
 )
+
+func TestEnv_ClientIDUsesServerCanonicalIdentityAfterAck(t *testing.T) {
+	env := &Env{Cfg: config.Config{ID: "claimed-client-id"}}
+	if got := env.ClientID(); got != "claimed-client-id" {
+		t.Fatalf("ClientID before ack = %q, want configured fallback", got)
+	}
+
+	if !env.SetServerClientID("key-fingerprint-canonical-id") {
+		t.Fatal("expected canonical server id to be accepted")
+	}
+	if got := env.ClientID(); got != "key-fingerprint-canonical-id" {
+		t.Fatalf("ClientID after ack = %q, want canonical id", got)
+	}
+
+	if env.SetServerClientID("bad\r\nheader") {
+		t.Fatal("expected control characters in canonical id to be rejected")
+	}
+	if got := env.ClientID(); got != "key-fingerprint-canonical-id" {
+		t.Fatalf("invalid update replaced canonical id with %q", got)
+	}
+}
+
+func TestEnv_ClientIDConcurrentAccess(t *testing.T) {
+	env := &Env{Cfg: config.Config{ID: "claimed-client-id"}}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 1_000; j++ {
+				if got := env.ClientID(); got == "" {
+					t.Errorf("ClientID returned empty during concurrent access")
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < 100; i++ {
+		if !env.SetServerClientID("key-fingerprint-canonical-id") {
+			t.Fatal("canonical id update failed")
+		}
+	}
+	wg.Wait()
+}
 
 func TestEnv_NotificationConfig(t *testing.T) {
 	env := &Env{}

@@ -79,6 +79,8 @@ const previewModalImg = document.getElementById("notification-preview-image");
 const previewModalClose = document.getElementById("notification-preview-close");
 
 const MAX_ROWS = 200;
+const MAX_CACHED_PREVIEW_OBJECT_URLS = 8;
+const previewObjectUrls = new Map();
 
 // Defaults loaded from /api/notifications/my-settings
 let defaultWebhookTemplate = "";
@@ -225,7 +227,7 @@ function formatTime(ts) {
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text == null ? "" : String(text);
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function wireToggle(inputEl, btnEl) {
@@ -459,26 +461,50 @@ function previewFormatter(cell) {
     return wrapper;
   }
 
+  mountPreviewLoader(wrapper, item, row.isLive);
+  return wrapper;
+}
+
+function rememberPreviewObjectUrl(notificationId, objectUrl) {
+  const existing = previewObjectUrls.get(notificationId);
+  if (existing && existing !== objectUrl) URL.revokeObjectURL(existing);
+  previewObjectUrls.delete(notificationId);
+  previewObjectUrls.set(notificationId, objectUrl);
+  while (previewObjectUrls.size > MAX_CACHED_PREVIEW_OBJECT_URLS) {
+    const oldestId = previewObjectUrls.keys().next().value;
+    const oldestUrl = previewObjectUrls.get(oldestId);
+    previewObjectUrls.delete(oldestId);
+    if (oldestUrl) URL.revokeObjectURL(oldestUrl);
+  }
+}
+
+function mountPreviewLoader(wrapper, item, isLive) {
   const notificationId = item?.id || "";
-  const skipFetch = !notificationId || (!row.isLive && !item?.screenshotId);
+  const skipFetch = !notificationId || (!isLive && !item?.screenshotId);
   if (skipFetch) {
     wrapper.textContent = "-";
     wrapper.className = "text-slate-500";
-    return wrapper;
+    return;
   }
 
-  if (item._previewObjectUrl) {
-    const img = createPreviewImage(item._previewObjectUrl);
-    wrapper.appendChild(img);
-    return wrapper;
+  const cachedUrl = previewObjectUrls.get(notificationId);
+  if (cachedUrl) {
+    wrapper.appendChild(createPreviewImage(cachedUrl));
+    return;
   }
 
-  wrapper.textContent = "Loading...";
-  wrapper.className = "text-slate-500";
+  const loadButton = document.createElement("button");
+  loadButton.type = "button";
+  loadButton.className = "text-xs px-2 py-1 rounded border border-slate-700 bg-slate-900/80 hover:bg-slate-800 text-slate-300";
+  loadButton.textContent = "View image";
+  wrapper.appendChild(loadButton);
   let attempts = 0;
   const maxAttempts = 5;
   const fetchPreview = async () => {
+    if (!wrapper.isConnected) return;
     attempts += 1;
+    loadButton.disabled = true;
+    loadButton.textContent = attempts > 1 ? `Retrying (${attempts}/${maxAttempts})...` : "Loading...";
     try {
       const url = `/api/notifications/${encodeURIComponent(notificationId)}/screenshot?ts=${Date.now()}`;
       const res = await fetch(url, { cache: "no-store" });
@@ -493,7 +519,7 @@ function previewFormatter(cell) {
       }
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);
-      item._previewObjectUrl = objectUrl;
+      rememberPreviewObjectUrl(notificationId, objectUrl);
       wrapper.innerHTML = "";
       wrapper.className = "";
       wrapper.appendChild(createPreviewImage(objectUrl));
@@ -506,8 +532,7 @@ function previewFormatter(cell) {
       wrapper.className = "text-slate-500";
     }
   };
-  fetchPreview();
-  return wrapper;
+  loadButton.addEventListener("click", fetchPreview, { once: true });
 }
 
 function createPreviewImage(objectUrl) {
@@ -524,7 +549,6 @@ function createPreviewImage(objectUrl) {
     previewModal.classList.remove("hidden");
     previewModal.classList.add("flex");
   });
-  if (img.decode) img.decode().catch(() => {});
   return img;
 }
 
@@ -549,67 +573,7 @@ function createNotificationRowElement(item, isLive) {
 
   const preview = row.querySelector(".preview-slot");
   if (preview) {
-    const notificationId = item?.id || "";
-    const skipFetch = !notificationId || (!isLive && !item?.screenshotId);
-    if (skipFetch) {
-      preview.textContent = "-";
-      preview.className = "text-slate-500";
-    } else {
-      preview.textContent = "Loading...";
-      preview.className = "text-slate-500";
-      const img = document.createElement("img");
-      img.className = "max-h-32 w-auto rounded border border-slate-800/80 cursor-zoom-in";
-      img.loading = "lazy";
-      img.alt = "Notification screenshot";
-
-      let attempts = 0;
-      const maxAttempts = 5;
-      const fetchPreview = async () => {
-        attempts += 1;
-        try {
-          const url = `/api/notifications/${encodeURIComponent(notificationId)}/screenshot?ts=${Date.now()}`;
-          const res = await fetch(url, { cache: "no-store" });
-          if (!res.ok) {
-            if ((res.status === 202 || res.status === 404) && attempts < maxAttempts) {
-              setTimeout(fetchPreview, 1000 * attempts);
-              return;
-            }
-            preview.textContent = "-";
-            preview.className = "text-slate-500";
-            return;
-          }
-          const blob = await res.blob();
-          const objectUrl = URL.createObjectURL(blob);
-          img.classList.add("opacity-0");
-          preview.innerHTML = "";
-          preview.className = "";
-          preview.appendChild(img);
-          img.addEventListener("load", () => img.classList.remove("opacity-0"));
-          img.addEventListener("error", () => {
-            preview.textContent = "-";
-            preview.className = "text-slate-500";
-            URL.revokeObjectURL(objectUrl);
-          });
-          img.src = objectUrl;
-          img.dataset.previewUrl = objectUrl;
-          if (img.decode) img.decode().catch(() => {});
-          img.addEventListener("click", () => {
-            if (!previewModal || !previewModalImg) return;
-            previewModalImg.src = img.dataset.previewUrl || objectUrl;
-            previewModal.classList.remove("hidden");
-            previewModal.classList.add("flex");
-          });
-        } catch {
-          if (attempts < maxAttempts) {
-            setTimeout(fetchPreview, 1000 * attempts);
-            return;
-          }
-          preview.textContent = "-";
-          preview.className = "text-slate-500";
-        }
-      };
-      fetchPreview();
-    }
+    mountPreviewLoader(preview, item, isLive);
   }
 
   return row;
@@ -967,6 +931,10 @@ const clearIfActive = () => {
 };
 document.addEventListener("visibilitychange", clearIfActive);
 window.addEventListener("focus", clearIfActive);
+window.addEventListener("beforeunload", () => {
+  for (const objectUrl of previewObjectUrls.values()) URL.revokeObjectURL(objectUrl);
+  previewObjectUrls.clear();
+});
 clearIfActive();
 
 function updateDesktopPermissionUi() {

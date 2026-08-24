@@ -130,6 +130,24 @@ export function incrementSharedFileDownloadCount(id: string): boolean {
   return (result as any)?.changes ? (result as any).changes > 0 : false;
 }
 
+/**
+ * Atomically reserves one download while enforcing expiry and max-downloads.
+ * The conditional UPDATE prevents concurrent requests from all observing the
+ * same stale download_count and overshooting the configured limit.
+ */
+export function claimSharedFileDownload(id: string, now = Date.now()): boolean {
+  const result = db.run(
+    `UPDATE shared_files
+       SET download_count = download_count + 1
+     WHERE id=?
+       AND (expires_at IS NULL OR expires_at >= ?)
+       AND (max_downloads IS NULL OR download_count < max_downloads)`,
+    id,
+    now,
+  );
+  return result.changes > 0;
+}
+
 export function deleteExpiredSharedFiles(): string[] {
   const now = Date.now();
   const expired = db

@@ -342,14 +342,14 @@ function displayFileList(files) {
         ` : ""}
         <button
           class="view-log-btn px-3 py-2 rounded-lg border border-blue-700 bg-blue-900/50 hover:bg-blue-800/70 text-blue-100 flex items-center gap-2"
-          data-filename="${file.name}"
+          data-filename="${escapeHtml(file.name)}"
         >
           <i class="fa-solid fa-eye"></i>
           <span>View</span>
         </button>
         <button
           class="download-log-btn px-3 py-2 rounded-lg border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800/70 text-emerald-100 flex items-center gap-2"
-          data-filename="${file.name}"
+          data-filename="${escapeHtml(file.name)}"
         >
           <i class="fa-solid fa-download"></i>
           <span>Download</span>
@@ -357,7 +357,7 @@ function displayFileList(files) {
         ${archiveMode ? "" : `
         <button
           class="delete-log-btn px-3 py-2 rounded-lg border border-red-700 bg-red-900/40 hover:bg-red-800/70 text-red-100 flex items-center gap-2"
-          data-filename="${file.name}"
+          data-filename="${escapeHtml(file.name)}"
         >
           <i class="fa-solid fa-trash"></i>
           <span>Delete</span>
@@ -428,7 +428,7 @@ function formatDate(dateStr) {
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text || "";
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function resetSearch() {

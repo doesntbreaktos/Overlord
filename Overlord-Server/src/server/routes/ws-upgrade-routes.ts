@@ -5,6 +5,7 @@ import { isIpBanned } from "../../db";
 import type { FeatureName, UserRole } from "../../users";
 import { hasPermission, requireClientAccess, requireFeatureAccess } from "../../rbac";
 import type { SocketRole } from "../../sessions/types";
+import { isSameOriginBrowserRequest } from "../request-origin";
 
 type RequestServer = {
   requestIP: (req: Request) => { address?: string } | null | undefined;
@@ -72,6 +73,19 @@ type AuthenticatedUser = {
   username: string;
   role: UserRole;
 };
+
+export function normalizeClaimedClientId(
+  rawValue: string,
+  fallback: () => string = () => crypto.randomUUID(),
+): string {
+  let decoded = "";
+  try {
+    decoded = decodeURIComponent(rawValue);
+  } catch {
+    return fallback();
+  }
+  return /^[A-Za-z0-9._:-]{1,128}$/.test(decoded) ? decoded : fallback();
+}
 
 type ClientViewerUpgradeRoute = {
   pattern: RegExp;
@@ -180,6 +194,10 @@ async function tryClientViewerUpgrade(
     const match = url.pathname.match(route.pattern);
     if (!match) continue;
 
+    if (!isSameOriginBrowserRequest(req, url, { requireOrigin: true })) {
+      return new Response("Forbidden: invalid WebSocket origin", { status: 403 });
+    }
+
     const user = await authenticateViewerRequest(req);
     if (user instanceof Response) return user;
 
@@ -220,6 +238,10 @@ async function tryGlobalViewerUpgrade(
   const route = globalViewerUpgradeRoutes.find((candidate) => candidate.path === url.pathname);
   if (!route) return null;
 
+  if (!isSameOriginBrowserRequest(req, url, { requireOrigin: true })) {
+    return new Response("Forbidden: invalid WebSocket origin", { status: 403 });
+  }
+
   const user = await authenticateViewerRequest(req);
   if (user instanceof Response) return user;
 
@@ -255,7 +277,7 @@ export async function handleWsUpgradeRoutes(
     if (!deps.isAuthorizedAgentRequest(req, url)) {
       return new Response("Unauthorized", { status: 401 });
     }
-    const clientId = wsMatch[1];
+    const clientId = normalizeClaimedClientId(wsMatch[1]);
     const role = "client";
     if (ip && isIpBanned(ip)) {
       logger.warn(`[auth] Rejected banned IP ${ip} for client ${clientId}`);

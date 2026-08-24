@@ -1,10 +1,12 @@
 import { wrapServerWithClientIp, type RequestServerLike } from "./client-ip";
 import { consumeUnauthorizedRateLimit } from "../rateLimit";
+import { rejectUnsafeCrossOriginRequest } from "./request-origin";
 
 export type RouteHandler = (req: Request, url: URL, server: unknown) => Promise<Response | null>;
 
 const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LONG_ID_SEGMENT = /^[0-9a-f]{16,}$/i;
+export const MAX_HTTP_METRIC_ROUTE_LENGTH = 1_024;
 
 function tooManyRequestsResponse(retryAfter = 60): Response {
   return new Response("Too many requests", {
@@ -30,7 +32,7 @@ export function normalizeHttpRoute(req: Request, url: URL): string {
     .filter(Boolean)
     .map(normalizeRouteSegment)
     .join("/");
-  return `${req.method.toUpperCase()} /${path}`;
+  return `${req.method.toUpperCase()} /${path}`.slice(0, MAX_HTTP_METRIC_ROUTE_LENGTH);
 }
 
 export function createHttpFetchHandler(deps: {
@@ -45,6 +47,8 @@ export function createHttpFetchHandler(deps: {
       if (req.method === "OPTIONS") {
         return new Response("", { headers: deps.CORS_HEADERS });
       }
+      const originDenied = rejectUnsafeCrossOriginRequest(req, url);
+      if (originDenied) return originDenied;
       const wrapped = wrapServerWithClientIp(server as RequestServerLike);
       const ip = wrapped.requestIP(req)?.address || "unknown";
 

@@ -172,6 +172,21 @@ export function consumeSolRpcRateLimit(
   return consumeRequestRateLimit(`sol-${action}:${userId}`, `Solana ${action}`, policy);
 }
 
+export function consumePushSubscriptionMutationRateLimit(
+  userId: number,
+): { limited: boolean; retryAfter?: number } {
+  const policy = makeRequestPolicy("PUSH_SUBSCRIPTION", {
+    maxRequests: 20,
+    windowMs: 60 * 1000,
+    lockoutMs: 60 * 1000,
+  });
+  return consumeRequestRateLimit(
+    `push-subscription:${userId}`,
+    "Push subscription mutation",
+    policy,
+  );
+}
+
 export function clearRequestRateLimitsForTests(): void {
   requestRateLimitStore.clear();
 }

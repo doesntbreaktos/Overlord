@@ -309,7 +309,12 @@ export async function handleClientRoutes(
       return Response.json({ ok: false, disabled: true }, { headers: deps.CORS_HEADERS });
     }
     const { requestThumbnailRegen, markThumbnailRequested, getThumbnailVersion, waitForThumbnail, clearThumbnailRequest } = await import("../../thumbnails");
-    markThumbnailRequested(clientId);
+    if (!markThumbnailRequested(clientId)) {
+      return Response.json(
+        { ok: false, error: "thumbnail request capacity exceeded" },
+        { status: 429, headers: deps.CORS_HEADERS },
+      );
+    }
     const target = clientManager.getClient(clientId);
     const beforeVersion = getThumbnailVersion(clientId);
     if (target?.online) {

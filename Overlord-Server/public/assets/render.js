@@ -44,7 +44,7 @@ if (typeof document !== "undefined" && typeof MutationObserver !== "undefined") 
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 const ROW_SELECTOR = "[data-client-row]";
@@ -699,12 +699,14 @@ export function createRenderer({
     return dashboardBadges(client)
       .sort((a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0))
       .map((badge) => {
-        const label = String(badge.label || badge.title || badge.pluginId || "Plugin");
-        const title = String(badge.title || label);
+        const label = String(badge.label || badge.title || badge.pluginId || "Plugin").slice(0, 256);
+        const title = String(badge.title || label).slice(0, 512);
         const tone = String(badge.tone || "info").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "info";
         const icon = String(badge.icon || "").replace(/[^a-z0-9_\- ]/gi, "").trim();
-        const imageUrl = String(badge.imageUrl || "").trim();
-        const href = String(badge.href || "").trim();
+        const rawImageUrl = String(badge.imageUrl || "").trim().slice(0, 2_048);
+        const rawHref = String(badge.href || "").trim().slice(0, 2_048);
+        const imageUrl = /^(?:https?:\/\/|\/(?!\/))/i.test(rawImageUrl) ? rawImageUrl : "";
+        const href = /^(?:https?:\/\/|\/(?!\/)|#)/i.test(rawHref) ? rawHref : "";
         const visual = imageUrl
           ? `<img src="${escapeHtml(imageUrl)}" alt="">`
           : `<i class="${escapeHtml(icon || "fa-solid fa-puzzle-piece")}"></i>`;

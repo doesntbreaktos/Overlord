@@ -362,7 +362,8 @@ function escapeHtml(value) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 async function setPluginEnabled(plugin, enabled, confirmed = false) {
@@ -441,8 +442,8 @@ function showPluginEnableConfirmModal(plugin, sigInfo) {
         <h3 class="text-lg font-semibold text-slate-100">Enable Unverified Plugin</h3>
       </div>
       <p class="text-sm text-slate-300 mb-2">${statusText}</p>
-      <p class="text-sm text-slate-400 mb-1">Plugin: <strong class="text-slate-200">${plugin.name || plugin.id}</strong></p>
-      ${sig.fingerprint ? `<p class="text-xs text-slate-500 font-mono mb-3">Signer: ${sig.fingerprint}</p>` : '<p class="text-xs text-slate-500 mb-3">No signature present.</p>'}
+      <p class="text-sm text-slate-400 mb-1">Plugin: <strong class="text-slate-200">${escapeHtml(plugin.name || plugin.id)}</strong></p>
+      ${sig.fingerprint ? `<p class="text-xs text-slate-500 font-mono mb-3">Signer: ${escapeHtml(sig.fingerprint)}</p>` : '<p class="text-xs text-slate-500 mb-3">No signature present.</p>'}
       <p class="text-sm text-slate-400" style="margin-bottom: 16px;">Type <strong class="text-emerald-300">confirm</strong> below to enable this plugin:</p>
       <input type="text" id="plugin-enable-confirm-input" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-100 text-sm focus:outline-none focus:border-emerald-500" style="margin-bottom: 16px;" placeholder="Type confirm" autocomplete="off" spellcheck="false" />
       <div class="plugin-modal-actions flex justify-end gap-2">

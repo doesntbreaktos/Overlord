@@ -14,6 +14,12 @@ func HandleHelloAck(_ context.Context, env *runtime.Env, envelope map[string]int
 	if env == nil || envelope == nil {
 		return nil
 	}
+	if canonicalID, ok := envelope["id"].(string); ok && env.SetServerClientID(canonicalID) {
+		if env.Plugins != nil {
+			env.Plugins.SetClientID(env.ClientID())
+		}
+		log.Printf("hello ack: using canonical client id %s", env.ClientID())
+	}
 	if version := toInt(envelope["protocolVersion"]); version > 0 {
 		log.Printf("hello ack: negotiated wire protocol v%d (agent v%d)", version, wire.WireProtocolVersion)
 	}

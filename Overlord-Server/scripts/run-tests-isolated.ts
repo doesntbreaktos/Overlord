@@ -5,7 +5,14 @@ import { join } from "node:path";
 const dataDir = mkdtempSync(join(tmpdir(), "overlord-bun-test-"));
 writeFileSync(join(dataDir, "config.json"), "{}\n", "utf8");
 
-const child = Bun.spawn(["bun", "test", "src", ...process.argv.slice(2)], {
+const child = Bun.spawn([
+  "bun",
+  "test",
+  "--isolate",
+  "--max-concurrency=1",
+  "src",
+  ...process.argv.slice(2),
+], {
   cwd: import.meta.dirname + "/..",
   env: {
     ...process.env,

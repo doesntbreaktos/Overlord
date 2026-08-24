@@ -21,6 +21,39 @@ import { encodeMessage } from "../protocol";
 import * as clientManager from "../clientManager";
 import { logger } from "../logger";
 
+export const SOCKS_PROXY_BIND_HOST = "127.0.0.1";
+export const SOCKS_PROXY_MAX_PENDING_BYTES = 64 * 1024 * 1024;
+export const SOCKS_PROXY_MAX_WRITE_QUEUE_BYTES = 128 * 1024 * 1024;
+export const SOCKS_PROXY_MAX_GLOBAL_CONNECTIONS = 4_096;
+export const SOCKS_PROXY_MAX_CLIENT_CONNECTIONS = 1_024;
+export const SOCKS_PROXY_MAX_GLOBAL_LISTENERS = 1_024;
+export const SOCKS_PROXY_MAX_CLIENT_LISTENERS = 256;
+export const SOCKS_PROXY_HANDSHAKE_TIMEOUT_SECONDS = 15;
+export const SOCKS_PROXY_CONNECT_TIMEOUT_SECONDS = 30;
+export const SOCKS_PROXY_IDLE_TIMEOUT_SECONDS = 5 * 60;
+const SOCKS_PROXY_MAX_HANDSHAKE_BYTES = 8 * 1024;
+
+export function hasSocksConnectionCapacity(
+  globalConnections: number,
+  clientConnections: number,
+): boolean {
+  return globalConnections < SOCKS_PROXY_MAX_GLOBAL_CONNECTIONS
+    && clientConnections < SOCKS_PROXY_MAX_CLIENT_CONNECTIONS;
+}
+
+export function enqueueSocksBuffer(
+  queue: Buffer[],
+  currentBytes: number,
+  data: Buffer | Uint8Array,
+  maxBytes: number,
+): number | null {
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  if (buffer.byteLength === 0) return currentBytes;
+  if (currentBytes < 0 || buffer.byteLength > maxBytes - currentBytes) return null;
+  queue.push(buffer);
+  return currentBytes + buffer.byteLength;
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type ProxyEntry = {
@@ -38,8 +71,10 @@ type TunnelConnection = {
   connected: boolean;
   /** buffer data received from SOCKS client before agent confirms */
   pendingData: Buffer[];
+  pendingDataBytes: number;
   /** data destined for the SOCKS client that the kernel buffer rejected; flushed on drain */
   writeQueue: Buffer[];
+  writeQueueBytes: number;
 };
 
 type ProxySocketData = {
@@ -48,6 +83,8 @@ type ProxySocketData = {
   /** SOCKS5 handshake phase */
   phase: "greeting" | "request" | "tunneling";
   buffer: Buffer;
+  /** Absolute deadline for handshake or agent-connect completion. */
+  phaseDeadline: number;
 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -88,6 +125,17 @@ export function startProxy(
     return { ok: false, message: `Port ${port} is already in use by another proxy` };
   }
 
+  if (activeProxies.size >= SOCKS_PROXY_MAX_GLOBAL_LISTENERS) {
+    return { ok: false, message: "Global SOCKS5 proxy listener limit reached" };
+  }
+  let clientListenerCount = 0;
+  for (const entry of activeProxies.values()) {
+    if (entry.clientId === clientId) clientListenerCount += 1;
+  }
+  if (clientListenerCount >= SOCKS_PROXY_MAX_CLIENT_LISTENERS) {
+    return { ok: false, message: `SOCKS5 proxy listener limit reached for client ${clientId}` };
+  }
+
   const target = clientManager.getClient(clientId);
   if (!target) {
     return { ok: false, message: `Client ${clientId} is not connected` };
@@ -97,23 +145,45 @@ export function startProxy(
 
   try {
     const listener = Bun.listen<ProxySocketData>({
-      hostname: "0.0.0.0",
+      hostname: SOCKS_PROXY_BIND_HOST,
       port,
       socket: {
         open(socket) {
           const connectionId = uuidv4();
+          const now = Date.now();
           socket.data = {
             connectionId,
             proxyPort: port,
             phase: "greeting",
             buffer: Buffer.alloc(0),
+            phaseDeadline: now + SOCKS_PROXY_HANDSHAKE_TIMEOUT_SECONDS * 1000,
           };
+
+          let globalConnections = 0;
+          let clientConnections = 0;
+          for (const activeEntry of activeProxies.values()) {
+            globalConnections += activeEntry.connections.size;
+            if (activeEntry.clientId === clientId) {
+              clientConnections += activeEntry.connections.size;
+            }
+          }
+          if (!hasSocksConnectionCapacity(globalConnections, clientConnections)) {
+            logger.warn(
+              `[socks5] rejected connection on port ${port}: active connection limit reached`,
+            );
+            socket.end();
+            return;
+          }
+
           connections.set(connectionId, {
             socket,
             connected: false,
             pendingData: [],
+            pendingDataBytes: 0,
             writeQueue: [],
+            writeQueueBytes: 0,
           });
+          socket.timeout(SOCKS_PROXY_HANDSHAKE_TIMEOUT_SECONDS);
           logger.debug(
             `[socks5] new connection ${connectionId} on port ${port}`,
           );
@@ -160,6 +230,16 @@ export function startProxy(
           flushWriteQueue(tunnel);
         },
 
+        timeout(socket) {
+          const entry = activeProxies.get(socket.data.proxyPort);
+          const tunnel = entry?.connections.get(socket.data.connectionId);
+          if (entry && tunnel) {
+            closeTunnel(entry, tunnel, "timeout");
+          } else {
+            try { socket.end(); } catch {}
+          }
+        },
+
         error(socket, err) {
           logger.error(
             `[socks5] socket error conn=${socket.data?.connectionId}`,
@@ -178,9 +258,9 @@ export function startProxy(
     };
     activeProxies.set(port, entry);
     logger.info(
-      `[socks5] proxy started on port ${port} for client ${clientId}`,
+      `[socks5] proxy started on ${SOCKS_PROXY_BIND_HOST}:${port} for client ${clientId}`,
     );
-    return { ok: true, message: `Proxy started on port ${port}` };
+    return { ok: true, message: `Proxy started on ${SOCKS_PROXY_BIND_HOST}:${port}` };
   } catch (err: any) {
     return {
       ok: false,
@@ -245,13 +325,71 @@ export function handleProxyTunnelData(
   }
 }
 
+function closeTunnel(
+  entry: ProxyEntry,
+  tunnel: TunnelConnection,
+  reason: string,
+): void {
+  const connectionId = tunnel.socket.data.connectionId;
+  tunnel.pendingData = [];
+  tunnel.pendingDataBytes = 0;
+  tunnel.writeQueue = [];
+  tunnel.writeQueueBytes = 0;
+  entry.connections.delete(connectionId);
+  logger.warn(`[socks5] closing ${connectionId}: ${reason}`);
+  try { tunnel.socket.end(); } catch {}
+
+  const agent = clientManager.getClient(entry.clientId);
+  if (!agent) return;
+  try {
+    agent.ws.send(
+      encodeMessage({
+        type: "command",
+        commandType: "proxy_close",
+        id: connectionId,
+      } as any),
+    );
+  } catch {}
+}
+
+function closeTunnelForBufferOverflow(
+  entry: ProxyEntry | undefined,
+  tunnel: TunnelConnection,
+  queueName: "pending" | "write",
+): void {
+  if (entry) {
+    closeTunnel(entry, tunnel, `${queueName} buffer limit exceeded`);
+    return;
+  }
+  tunnel.pendingData = [];
+  tunnel.pendingDataBytes = 0;
+  tunnel.writeQueue = [];
+  tunnel.writeQueueBytes = 0;
+  try { tunnel.socket.end(); } catch {}
+}
+
 function writeToTunnelSocket(
   tunnel: TunnelConnection,
   data: Buffer | Uint8Array,
 ): void {
+  tunnel.socket.timeout(SOCKS_PROXY_IDLE_TIMEOUT_SECONDS);
   const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
   if (tunnel.writeQueue.length > 0) {
-    tunnel.writeQueue.push(buf);
+    const nextBytes = enqueueSocksBuffer(
+      tunnel.writeQueue,
+      tunnel.writeQueueBytes,
+      buf,
+      SOCKS_PROXY_MAX_WRITE_QUEUE_BYTES,
+    );
+    if (nextBytes === null) {
+      closeTunnelForBufferOverflow(
+        activeProxies.get(tunnel.socket.data.proxyPort),
+        tunnel,
+        "write",
+      );
+      return;
+    }
+    tunnel.writeQueueBytes = nextBytes;
     return;
   }
   let written: number;
@@ -261,7 +399,22 @@ function writeToTunnelSocket(
     return;
   }
   if (written < buf.length) {
-    tunnel.writeQueue.push(buf.subarray(Math.max(written, 0)));
+    const remaining = buf.subarray(Math.max(written, 0));
+    const nextBytes = enqueueSocksBuffer(
+      tunnel.writeQueue,
+      tunnel.writeQueueBytes,
+      remaining,
+      SOCKS_PROXY_MAX_WRITE_QUEUE_BYTES,
+    );
+    if (nextBytes === null) {
+      closeTunnelForBufferOverflow(
+        activeProxies.get(tunnel.socket.data.proxyPort),
+        tunnel,
+        "write",
+      );
+      return;
+    }
+    tunnel.writeQueueBytes = nextBytes;
   }
 }
 
@@ -273,14 +426,19 @@ function flushWriteQueue(tunnel: TunnelConnection): void {
       written = tunnel.socket.write(next);
     } catch {
       tunnel.writeQueue.length = 0;
+      tunnel.writeQueueBytes = 0;
       return;
     }
     if (written < next.length) {
-      tunnel.writeQueue[0] = next.subarray(Math.max(written, 0));
+      const consumed = Math.max(written, 0);
+      tunnel.writeQueueBytes -= consumed;
+      tunnel.writeQueue[0] = next.subarray(consumed);
       return;
     }
     tunnel.writeQueue.shift();
+    tunnel.writeQueueBytes -= next.length;
   }
+  tunnel.writeQueueBytes = 0;
 }
 
 /** Called when the agent closes its side of a tunnel */
@@ -313,6 +471,8 @@ export function handleProxyConnectResult(
 
     if (ok) {
       tunnel.connected = true;
+      tunnel.socket.data.phaseDeadline = 0;
+      tunnel.socket.timeout(SOCKS_PROXY_IDLE_TIMEOUT_SECONDS);
       // send SOCKS5 success response
       //  VER | REP | RSV | ATYP | BND.ADDR (4 bytes)  | BND.PORT (2 bytes)
       tunnel.socket.write(
@@ -324,6 +484,7 @@ export function handleProxyConnectResult(
         sendDataToAgent(entry.clientId, connectionId, buf);
       }
       tunnel.pendingData = [];
+      tunnel.pendingDataBytes = 0;
     } else {
       logger.debug(`[socks5] tunnel rejected by agent (conn=${connectionId})`);
       // SOCKS5 connection-refused reply
@@ -343,21 +504,55 @@ function handleSocksData(
   entry: ProxyEntry,
 ) {
   const { connectionId, phase } = socket.data;
+  const tunnel = entry.connections.get(connectionId);
+  const waitingForSetup = phase !== "tunneling" || !tunnel?.connected;
+  if (waitingForSetup && Date.now() >= socket.data.phaseDeadline) {
+    if (tunnel) closeTunnel(entry, tunnel, "handshake/connect deadline exceeded");
+    else socket.end();
+    return;
+  }
+  if (waitingForSetup) {
+    const remainingSeconds = Math.max(
+      1,
+      Math.ceil((socket.data.phaseDeadline - Date.now()) / 1000),
+    );
+    socket.timeout(remainingSeconds);
+  } else {
+    socket.timeout(SOCKS_PROXY_IDLE_TIMEOUT_SECONDS);
+  }
 
   if (phase === "tunneling") {
-    const tunnel = entry.connections.get(connectionId);
     if (!tunnel) {
       socket.end();
       return;
     }
     if (!tunnel.connected) {
-      tunnel.pendingData.push(incoming);
+      const nextBytes = enqueueSocksBuffer(
+        tunnel.pendingData,
+        tunnel.pendingDataBytes,
+        incoming,
+        SOCKS_PROXY_MAX_PENDING_BYTES,
+      );
+      if (nextBytes === null) {
+        closeTunnelForBufferOverflow(entry, tunnel, "pending");
+        return;
+      }
+      tunnel.pendingDataBytes = nextBytes;
       return;
     }
     sendDataToAgent(entry.clientId, connectionId, incoming);
     return;
   }
 
+  if (socket.data.buffer.byteLength + incoming.byteLength > SOCKS_PROXY_MAX_HANDSHAKE_BYTES) {
+    const tunnel = entry.connections.get(connectionId);
+    if (tunnel) {
+      closeTunnelForBufferOverflow(entry, tunnel, "pending");
+    } else {
+      socket.end();
+    }
+    return;
+  }
   socket.data.buffer = Buffer.concat([socket.data.buffer, incoming]);
   const buf = socket.data.buffer;
 
@@ -455,6 +650,8 @@ function handleSocksData(
 
     socket.data.phase = "tunneling";
     socket.data.buffer = Buffer.alloc(0);
+    socket.data.phaseDeadline = Date.now() + SOCKS_PROXY_CONNECT_TIMEOUT_SECONDS * 1000;
+    socket.timeout(SOCKS_PROXY_CONNECT_TIMEOUT_SECONDS);
 
     const agent = clientManager.getClient(entry.clientId);
     if (!agent) {
@@ -466,19 +663,37 @@ function handleSocksData(
       return;
     }
 
-    agent.ws.send(
-      encodeMessage({
-        type: "command",
-        commandType: "proxy_connect",
-        id: connectionId,
-        payload: { host, port },
-      } as any),
-    );
+    try {
+      agent.ws.send(
+        encodeMessage({
+          type: "command",
+          commandType: "proxy_connect",
+          id: connectionId,
+          payload: { host, port },
+        } as any),
+      );
+    } catch {
+      const activeTunnel = entry.connections.get(connectionId);
+      if (activeTunnel) closeTunnel(entry, activeTunnel, "failed to contact agent");
+      return;
+    }
 
     const remaining = buf.subarray(portOffset + 2);
     if (remaining.length > 0) {
       const tunnel = entry.connections.get(connectionId);
-      if (tunnel) tunnel.pendingData.push(remaining);
+      if (tunnel) {
+        const nextBytes = enqueueSocksBuffer(
+          tunnel.pendingData,
+          tunnel.pendingDataBytes,
+          remaining,
+          SOCKS_PROXY_MAX_PENDING_BYTES,
+        );
+        if (nextBytes === null) {
+          closeTunnelForBufferOverflow(entry, tunnel, "pending");
+          return;
+        }
+        tunnel.pendingDataBytes = nextBytes;
+      }
     }
     return;
   }

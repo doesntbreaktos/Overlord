@@ -590,7 +590,7 @@ func runSession(ctx context.Context, cancel context.CancelFunc, conn *websocket.
 	env := &rt.Env{Conn: safeWriter, Cfg: cfg, Cancel: cancel, SelectedDisplay: handlers.GetPersistedDisplay()}
 	env.SetLastPong(time.Now().UnixMilli())
 	env.Console = rt.NewConsoleHub(env)
-	env.Plugins = plugins.NewManager(env.Conn, plugins.HostInfo{ClientID: cfg.ID, OS: cfg.OS, Arch: cfg.Arch, Version: cfg.Version})
+	env.Plugins = plugins.NewManager(env.Conn, plugins.HostInfo{ClientID: env.ClientID(), OS: cfg.OS, Arch: cfg.Arch, Version: cfg.Version})
 	defer env.Plugins.Close()
 
 	env.Keylogger = keylogger.New()

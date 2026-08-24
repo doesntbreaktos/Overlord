@@ -1,5 +1,6 @@
 import { encodeMessage, type Hello, type Ping, type WireMessage } from "./protocol";
 import { sanitizeCommandVersionRanges } from "./command-compatibility";
+import { isIP } from "node:net";
 
 let _geoip: typeof import("geoip-lite");
 async function getGeoip() {
@@ -78,8 +79,10 @@ export async function handleHello(
     info.ip = ip;
   }
   const reportedPublicIP = sanitizeInfoString((payload as any).publicIP, 64);
-  if (reportedPublicIP && /^[0-9a-fA-F:.]{3,45}$/.test(reportedPublicIP)) {
-    info.ip = reportedPublicIP;
+  if (reportedPublicIP && isIP(reportedPublicIP) !== 0) {
+    // Self-reported metadata is useful diagnostically, but must never replace
+    // the peer address used for bans, rate limits, auditing, or geolocation.
+    info.reportedPublicIp = reportedPublicIP;
   }
   info.hwid = sanitizeInfoString((payload as any).hwid);
   info.host = sanitizeInfoString(payload.host);
@@ -272,11 +275,13 @@ export function handleScreenshotThumbnailResult(info: ClientInfo, payload: any):
   const format = rawFormat === "jpg" ? "jpeg" : rawFormat;
   if (format !== "jpeg" && format !== "webp") return false;
 
-  setLatestFrame(info.id, bytes, format);
-  void requestThumbnailRegen(info.id).then((ok) => {
-    if (ok) notifyThumbnailGenerated(info.id);
-  });
-  return true;
+  const admitted = setLatestFrame(info.id, bytes, format);
+  if (admitted) {
+    void requestThumbnailRegen(info.id).then((ok) => {
+      if (ok) notifyThumbnailGenerated(info.id);
+    });
+  }
+  return admitted;
 }
 
 export function shouldRelayFrameToViewers(payload: unknown): boolean {
@@ -327,10 +332,11 @@ export function handleFrame(info: ClientInfo, payload: unknown, relayToViewers =
     const now = Date.now();
     const thumbnailRequested = isThumbnailRequested(info.id);
     if (thumbnailRequested || !hasThumbnail(info.id)) {
-      setLatestFrame(info.id, bytes, safeFormat);
-      void requestThumbnailRegen(info.id).then((ok) => {
-        if (ok) notifyThumbnailGenerated(info.id);
-      });
+      if (setLatestFrame(info.id, bytes, safeFormat)) {
+        void requestThumbnailRegen(info.id).then((ok) => {
+          if (ok) notifyThumbnailGenerated(info.id);
+        });
+      }
     }
     info.lastSeen = now;
     info.online = true;

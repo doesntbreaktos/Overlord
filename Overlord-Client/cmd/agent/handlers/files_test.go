@@ -477,8 +477,8 @@ func TestHandleFileUploadHTTP(t *testing.T) {
 	data := []byte("http-upload-payload")
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("x-overlord-client-id"); got != "client-abc" {
-			t.Fatalf("expected x-overlord-client-id client-abc, got %q", got)
+		if got := r.Header.Get("x-overlord-client-id"); got != "key-fingerprint-canonical-id" {
+			t.Fatalf("expected canonical x-overlord-client-id, got %q", got)
 		}
 		if got := r.Header.Get("x-agent-token"); got != "agent-token" {
 			t.Fatalf("expected x-agent-token agent-token, got %q", got)
@@ -494,10 +494,13 @@ func TestHandleFileUploadHTTP(t *testing.T) {
 	env := &rt.Env{
 		Conn: writer,
 		Cfg: config.Config{
-			ID:                    "client-abc",
+			ID:                    "claimed-client-id",
 			AgentToken:            "agent-token",
 			TLSInsecureSkipVerify: true,
 		},
+	}
+	if !env.SetServerClientID("key-fingerprint-canonical-id") {
+		t.Fatal("failed to install canonical client id")
 	}
 
 	if err := HandleFileUploadHTTP(context.Background(), env, "cmd-http-upload", destPath, ts.URL+"/file", int64(len(data))); err != nil {

@@ -2,7 +2,7 @@ import { authenticateRequest } from "../../auth";
 import { AuditAction, logAudit } from "../../auditLog";
 import * as clientManager from "../../clientManager";
 import { getConfig, updateNotificationsConfig } from "../../config";
-import { savePushSubscription, deletePushSubscriptionForUser, getPushSubscriptionsByUser } from "../../db";
+import { savePushSubscription, deletePushSubscriptionForUser } from "../../db";
 import { encodeMessage } from "../../protocol";
 import {
   canUserAccessClient,
@@ -10,13 +10,33 @@ import {
   updateUserNotificationSettings,
 } from "../../users";
 import { requirePermission } from "../../rbac";
+import { consumePushSubscriptionMutationRateLimit } from "../../rateLimit";
 import {
   DEFAULT_WEBHOOK_TEMPLATE,
   DEFAULT_TELEGRAM_TEMPLATE,
-  isPrivateOrInternalHostname,
   renderNotificationTemplate,
 } from "../notification-delivery";
 import { getVapidPublicKey } from "../web-push";
+import { fetchPublicHttpResponse, validatePublicHttpUrl } from "../url-security";
+import { readJsonBodyLimited, RequestBodyTooLargeError } from "../request-body";
+
+const MAX_WEBHOOK_URL_LENGTH = 2_048;
+const MAX_NOTIFICATION_TEMPLATE_LENGTH = 16 * 1024;
+const MAX_PUSH_ENDPOINT_LENGTH = 4_096;
+const MAX_PUSH_KEY_LENGTH = 1_024;
+const MAX_TELEGRAM_BOT_TOKEN_LENGTH = 512;
+const MAX_TELEGRAM_CHAT_ID_LENGTH = 256;
+const MAX_NOTIFICATIONS_CONFIG_BODY_BYTES = 128 * 1024;
+const MAX_USER_NOTIFICATION_SETTINGS_BODY_BYTES = 64 * 1024;
+const MAX_WEBHOOK_PREVIEW_BODY_BYTES = 32 * 1024;
+const MAX_PUSH_SUBSCRIPTION_BODY_BYTES = 16 * 1024;
+
+async function validateWebhookUrl(rawUrl: string): Promise<URL> {
+  if (rawUrl.length > MAX_WEBHOOK_URL_LENGTH) {
+    throw new Error("Webhook URL is too long");
+  }
+  return await validatePublicHttpUrl(rawUrl);
+}
 
 type RequestIpProvider = {
   requestIP: (req: Request) => { address?: string } | null | undefined;
@@ -109,8 +129,11 @@ export async function handleNotificationsConfigRoutes(
 
     let body: any = {};
     try {
-      body = await req.json();
-    } catch {
+      body = await readJsonBodyLimited(req, MAX_NOTIFICATIONS_CONFIG_BODY_BYTES);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        return Response.json({ error: "Request body too large" }, { status: 413 });
+      }
       return Response.json({ error: "Invalid JSON" }, { status: 400 });
     }
 
@@ -176,17 +199,21 @@ export async function handleNotificationsConfigRoutes(
         ? body.clipboardEnabled
         : currentConfig.clipboardEnabled || false;
 
+    if (telegramBotToken.length > MAX_TELEGRAM_BOT_TOKEN_LENGTH) {
+      return Response.json({ error: "Telegram bot token is too long" }, { status: 400 });
+    }
+    if (telegramChatId.length > MAX_TELEGRAM_CHAT_ID_LENGTH) {
+      return Response.json({ error: "Telegram chat ID is too long" }, { status: 400 });
+    }
+
     if (webhookUrl) {
       try {
-        const parsed = new URL(webhookUrl);
-        if (!/^https?:$/.test(parsed.protocol)) {
-          return Response.json(
-            { error: "Webhook URL must be http(s)" },
-            { status: 400 },
-          );
-        }
-      } catch {
-        return Response.json({ error: "Invalid webhook URL" }, { status: 400 });
+        await validateWebhookUrl(webhookUrl);
+      } catch (error: any) {
+        return Response.json(
+          { error: error?.message || "Invalid webhook URL" },
+          { status: 400 },
+        );
       }
     }
 
@@ -276,8 +303,11 @@ export async function handleNotificationsConfigRoutes(
     if (req.method === "PUT") {
       let body: any = {};
       try {
-        body = await req.json();
-      } catch {
+        body = await readJsonBodyLimited(req, MAX_USER_NOTIFICATION_SETTINGS_BODY_BYTES);
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          return Response.json({ error: "Request body too large" }, { status: 413 });
+        }
         return Response.json({ error: "Invalid JSON" }, { status: 400 });
       }
 
@@ -290,30 +320,46 @@ export async function handleNotificationsConfigRoutes(
         const url_val = body.webhook_url.trim();
         if (url_val) {
           try {
-            const parsed = new URL(url_val);
-            if (!/^https?:$/.test(parsed.protocol)) {
-              return Response.json({ error: "Webhook URL must use http(s)" }, { status: 400 });
-            }
-          } catch {
-            return Response.json({ error: "Invalid webhook URL" }, { status: 400 });
+            await validateWebhookUrl(url_val);
+          } catch (error: any) {
+            return Response.json(
+              { error: error?.message || "Invalid webhook URL" },
+              { status: 400 },
+            );
           }
         }
         patch.webhook_url = url_val || null;
       }
       if (typeof body?.webhook_template === "string") {
-        patch.webhook_template = body.webhook_template.trim() || null;
+        const template = body.webhook_template.trim();
+        if (template.length > MAX_NOTIFICATION_TEMPLATE_LENGTH) {
+          return Response.json({ error: "Webhook template is too long" }, { status: 400 });
+        }
+        patch.webhook_template = template || null;
       }
       if (typeof body?.telegram_enabled === "boolean" || typeof body?.telegram_enabled === "number") {
         patch.telegram_enabled = body.telegram_enabled ? 1 : 0;
       }
       if (typeof body?.telegram_bot_token === "string") {
-        patch.telegram_bot_token = body.telegram_bot_token.trim() || null;
+        const token = body.telegram_bot_token.trim();
+        if (token.length > MAX_TELEGRAM_BOT_TOKEN_LENGTH) {
+          return Response.json({ error: "Telegram bot token is too long" }, { status: 400 });
+        }
+        patch.telegram_bot_token = token || null;
       }
       if (typeof body?.telegram_chat_id === "string") {
-        patch.telegram_chat_id = body.telegram_chat_id.trim() || null;
+        const chatId = body.telegram_chat_id.trim();
+        if (chatId.length > MAX_TELEGRAM_CHAT_ID_LENGTH) {
+          return Response.json({ error: "Telegram chat ID is too long" }, { status: 400 });
+        }
+        patch.telegram_chat_id = chatId || null;
       }
       if (typeof body?.telegram_template === "string") {
-        patch.telegram_template = body.telegram_template.trim() || null;
+        const template = body.telegram_template.trim();
+        if (template.length > MAX_NOTIFICATION_TEMPLATE_LENGTH) {
+          return Response.json({ error: "Telegram template is too long" }, { status: 400 });
+        }
+        patch.telegram_template = template || null;
       }
       if (typeof body?.client_event_webhook === "boolean" || typeof body?.client_event_webhook === "number") {
         patch.client_event_webhook = body.client_event_webhook ? 1 : 0;
@@ -346,8 +392,11 @@ export async function handleNotificationsConfigRoutes(
 
     let body: any = {};
     try {
-      body = await req.json();
-    } catch {
+      body = await readJsonBodyLimited(req, MAX_WEBHOOK_PREVIEW_BODY_BYTES);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        return Response.json({ error: "Request body too large" }, { status: 413 });
+      }
       return Response.json({ error: "Invalid JSON" }, { status: 400 });
     }
 
@@ -360,19 +409,15 @@ export async function handleNotificationsConfigRoutes(
 
     let parsed: URL;
     try {
-      parsed = new URL(webhookUrl);
-      if (!/^https?:$/.test(parsed.protocol)) {
-        return Response.json({ error: "Webhook URL must use http(s)" }, { status: 400 });
-      }
-    } catch {
-      return Response.json({ error: "Invalid webhook URL" }, { status: 400 });
-    }
-
-    if (isPrivateOrInternalHostname(parsed.hostname.toLowerCase())) {
+      parsed = await validateWebhookUrl(webhookUrl);
+    } catch (error: any) {
       return Response.json(
-        { error: "Webhook URL points at a private/internal address" },
+        { error: error?.message || "Invalid webhook URL" },
         { status: 400 },
       );
+    }
+    if (webhookTemplate.length > MAX_NOTIFICATION_TEMPLATE_LENGTH) {
+      return Response.json({ error: "Webhook template is too long" }, { status: 400 });
     }
 
     const sampleRecord = {
@@ -432,13 +477,13 @@ export async function handleNotificationsConfigRoutes(
           ],
         };
         sentPayload = JSON.stringify(discordPayload);
-        response = await fetch(parsed.toString(), {
+        response = await fetchPublicHttpResponse(parsed.toString(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: sentPayload,
         });
       } else {
-        response = await fetch(parsed.toString(), {
+        response = await fetchPublicHttpResponse(parsed.toString(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: jsonPayloadToSend,
@@ -483,11 +528,27 @@ export async function handleNotificationsConfigRoutes(
       });
     }
 
+    if (req.method === "POST" || req.method === "DELETE") {
+      const rateLimit = consumePushSubscriptionMutationRateLimit(user.userId);
+      if (rateLimit.limited) {
+        return Response.json(
+          { error: "Push subscription update rate limit exceeded" },
+          {
+            status: 429,
+            headers: { "Retry-After": String(rateLimit.retryAfter || 60) },
+          },
+        );
+      }
+    }
+
     if (req.method === "POST") {
       let body: any = {};
       try {
-        body = await req.json();
-      } catch {
+        body = await readJsonBodyLimited(req, MAX_PUSH_SUBSCRIPTION_BODY_BYTES);
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          return Response.json({ error: "Request body too large" }, { status: 413 });
+        }
         return Response.json({ error: "Invalid JSON" }, { status: 400 });
       }
 
@@ -498,22 +559,58 @@ export async function handleNotificationsConfigRoutes(
       if (!endpoint || !p256dh || !auth) {
         return Response.json({ error: "Missing subscription fields" }, { status: 400 });
       }
+      if (
+        endpoint.length > MAX_PUSH_ENDPOINT_LENGTH ||
+        p256dh.length > MAX_PUSH_KEY_LENGTH ||
+        auth.length > MAX_PUSH_KEY_LENGTH
+      ) {
+        return Response.json({ error: "Subscription field is too long" }, { status: 400 });
+      }
+      try {
+        const parsed = await validatePublicHttpUrl(endpoint);
+        if (parsed.protocol !== "https:") {
+          return Response.json({ error: "Push endpoint must use HTTPS" }, { status: 400 });
+        }
+      } catch (error: any) {
+        return Response.json(
+          { error: error?.message || "Invalid push endpoint" },
+          { status: 400 },
+        );
+      }
 
-      savePushSubscription(user.userId, endpoint, p256dh, auth);
-      return Response.json({ ok: true });
+      const saved = savePushSubscription(user.userId, endpoint, p256dh, auth);
+      if (!saved.ok) {
+        if (saved.reason === "global_limit") {
+          return Response.json(
+            { error: "The server push subscription limit has been reached" },
+            { status: 503, headers: { "Retry-After": "300" } },
+          );
+        }
+        return Response.json(
+          { error: "This push endpoint is already registered" },
+          { status: 409 },
+        );
+      }
+      return Response.json({ ok: true, replacedOldest: !!saved.evictedEndpoint });
     }
 
     if (req.method === "DELETE") {
       let body: any = {};
       try {
-        body = await req.json();
-      } catch {
+        body = await readJsonBodyLimited(req, MAX_PUSH_SUBSCRIPTION_BODY_BYTES);
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          return Response.json({ error: "Request body too large" }, { status: 413 });
+        }
         return Response.json({ error: "Invalid JSON" }, { status: 400 });
       }
 
       const endpoint = typeof body?.endpoint === "string" ? body.endpoint.trim() : "";
       if (!endpoint) {
         return Response.json({ error: "Missing endpoint" }, { status: 400 });
+      }
+      if (endpoint.length > MAX_PUSH_ENDPOINT_LENGTH) {
+        return Response.json({ error: "Subscription endpoint is too long" }, { status: 400 });
       }
 
       deletePushSubscriptionForUser(user.userId, endpoint);

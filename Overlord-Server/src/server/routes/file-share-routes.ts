@@ -10,7 +10,7 @@ import {
   insertSharedFile,
   deleteSharedFile,
   updateSharedFile,
-  incrementSharedFileDownloadCount,
+  claimSharedFileDownload,
 } from "../../db";
 import { getUserById } from "../../users";
 import { checkPermission, requirePermission } from "../../rbac";
@@ -18,7 +18,78 @@ import { resolveContainedPath, sanitizeUploadFilename } from "../upload-security
 
 type FileShareRouteDeps = {
   FILE_SHARE_ROOT: string;
+  /** Must be the server's trusted-proxy-aware peer address resolver. */
+  requestIP?: (req: Request) => { address?: string } | null | undefined;
 };
+
+export const FILE_SHARE_PASSWORD_MAX_ATTEMPTS = 10;
+export const FILE_SHARE_PASSWORD_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+const FILE_SHARE_PASSWORD_LIMIT_MAX_KEYS = 10_000;
+const FILE_SHARE_PASSWORD_MAX_CHARS = 1_024;
+const FILE_SHARE_PASSWORD_PRUNE_INTERVAL_MS = 60_000;
+
+function allowLegacyPasswordQuery(): boolean {
+  const setting = String(process.env.OVERLORD_ALLOW_FILE_SHARE_PASSWORD_QUERY || "").trim();
+  return !/^(?:0|false|no|off)$/i.test(setting);
+}
+
+type FileSharePasswordAttempts = {
+  attempts: number;
+  expiresAt: number;
+};
+
+const fileSharePasswordAttempts = new Map<string, FileSharePasswordAttempts>();
+let lastFileSharePasswordPrune = 0;
+
+function pruneFileSharePasswordAttempts(now: number): void {
+  if (
+    fileSharePasswordAttempts.size < FILE_SHARE_PASSWORD_LIMIT_MAX_KEYS
+    && now - lastFileSharePasswordPrune < FILE_SHARE_PASSWORD_PRUNE_INTERVAL_MS
+  ) {
+    return;
+  }
+  lastFileSharePasswordPrune = now;
+  for (const [key, state] of fileSharePasswordAttempts) {
+    if (state.expiresAt <= now) fileSharePasswordAttempts.delete(key);
+  }
+  while (fileSharePasswordAttempts.size >= FILE_SHARE_PASSWORD_LIMIT_MAX_KEYS) {
+    const oldestKey = fileSharePasswordAttempts.keys().next().value;
+    if (typeof oldestKey !== "string") break;
+    fileSharePasswordAttempts.delete(oldestKey);
+  }
+}
+
+/** Reserves one expensive password verification before bcrypt is invoked. */
+export function consumeFileSharePasswordAttempt(
+  key: string,
+  now = Date.now(),
+): { limited: boolean; retryAfter: number } {
+  let state = fileSharePasswordAttempts.get(key);
+  if (state && state.expiresAt <= now) {
+    fileSharePasswordAttempts.delete(key);
+    state = undefined;
+  }
+  if (state && state.attempts >= FILE_SHARE_PASSWORD_MAX_ATTEMPTS) {
+    return {
+      limited: true,
+      retryAfter: Math.max(1, Math.ceil((state.expiresAt - now) / 1000)),
+    };
+  }
+  if (!state) {
+    pruneFileSharePasswordAttempts(now);
+    fileSharePasswordAttempts.set(key, {
+      attempts: 1,
+      expiresAt: now + FILE_SHARE_PASSWORD_ATTEMPT_WINDOW_MS,
+    });
+  } else {
+    state.attempts += 1;
+  }
+  return { limited: false, retryAfter: 0 };
+}
+
+export function clearFileSharePasswordAttempts(key: string): void {
+  fileSharePasswordAttempts.delete(key);
+}
 
 function guessMimeType(filename: string): string {
   const ext = path.extname(filename).toLowerCase();
@@ -110,14 +181,36 @@ export async function handleFileShareRoutes(
     }
 
     if (file.passwordHash) {
-      const providedPassword = req.headers.get("X-Download-Password") || url.searchParams.get("password") || "";
+      const headerPassword = req.headers.get("X-Download-Password") || "";
+      const queryPassword = url.searchParams.get("password") || "";
+      if (!headerPassword && queryPassword && !allowLegacyPasswordQuery()) {
+        return Response.json(
+          { error: "Password query parameters are disabled; use X-Download-Password" },
+          { status: 400 },
+        );
+      }
+      const providedPassword = headerPassword || (allowLegacyPasswordQuery() ? queryPassword : "");
       if (!providedPassword) {
         return Response.json({ error: "Password required" }, { status: 401 });
+      }
+
+      const peerAddress = deps.requestIP?.(req)?.address?.trim() || "unknown";
+      const passwordAttemptKey = `${peerAddress.slice(0, 128)}:${file.id}`;
+      const limit = consumeFileSharePasswordAttempt(passwordAttemptKey);
+      if (limit.limited) {
+        return Response.json(
+          { error: "Too many password attempts. Try again later." },
+          { status: 429, headers: { "Retry-After": String(limit.retryAfter) } },
+        );
+      }
+      if (providedPassword.length > FILE_SHARE_PASSWORD_MAX_CHARS) {
+        return Response.json({ error: "Invalid password" }, { status: 403 });
       }
       const valid = await Bun.password.verify(providedPassword, file.passwordHash);
       if (!valid) {
         return Response.json({ error: "Invalid password" }, { status: 403 });
       }
+      clearFileSharePasswordAttempts(passwordAttemptKey);
     }
 
     const diskFile = Bun.file(file.storedPath);
@@ -125,7 +218,16 @@ export async function handleFileShareRoutes(
       return Response.json({ error: "File not found on disk" }, { status: 404 });
     }
 
-    incrementSharedFileDownloadCount(file.id);
+    if (!claimSharedFileDownload(file.id)) {
+      const current = getSharedFile(file.id);
+      if (!current) {
+        return Response.json({ error: "File not found" }, { status: 404 });
+      }
+      if (current.expiresAt && current.expiresAt < Date.now()) {
+        return Response.json({ error: "File has expired" }, { status: 410 });
+      }
+      return Response.json({ error: "Download limit reached" }, { status: 410 });
+    }
 
     const sanitizedFilename = file.filename.replace(/[^\w.\-() ]/g, "_");
 
@@ -134,6 +236,11 @@ export async function handleFileShareRoutes(
         "Content-Type": file.mimeType || "application/octet-stream",
         "Content-Disposition": `attachment; filename="${sanitizedFilename}"`,
         "Content-Length": String(file.size),
+        "Content-Security-Policy": "sandbox; default-src 'none'",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "private, no-store",
       },
     });
   }
