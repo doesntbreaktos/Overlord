@@ -8,7 +8,7 @@
 
 Hello, I made this project for fun.
 
-The canonical repository is [GitHub](https://github.com/doesntbreaktos/Overlord); [GitLab](https://gitlab.com/vxaboveground/overlord) is maintained as a mirror and release-registry host.
+The canonical repository is [GitHub](https://github.com/doesntbreaktos/Overlord); [GitLab](https://gitlab.com/vxaboveground/overlord) is maintained only as a source mirror.
 
 The server is TypeScript on Node/Bun. The client is Go. Operators talk to the server through a web panel or the Electron desktop app, and agents connect over encrypted WebSockets.
 
@@ -208,18 +208,16 @@ curl -O https://raw.githubusercontent.com/doesntbreaktos/Overlord/main/docker-co
 docker compose up -d
 ```
 
-The Compose file itself is downloaded from the canonical GitHub repository.
-Until the first GHCR release is published and made public, the default image
-continues to come from the GitLab mirror's container registry at
-`registry.gitlab.com/vxaboveground/overlord:latest`.
+The Compose file itself is downloaded from the canonical GitHub repository,
+and the default image is pulled from GitHub Container Registry at
+`ghcr.io/doesntbreaktos/overlord:latest`.
 
 Maintainers can publish a matching multi-architecture GHCR image from the
 [overlord-ci workflow](https://github.com/doesntbreaktos/Overlord/actions/workflows/docker-publish.yml).
 Select **Run workflow** and enter the version currently declared by the server
 and agent (for example, `3.1.0`). The workflow publishes version, major/minor,
-major, and `latest` tags to `ghcr.io/doesntbreaktos/overlord`. After the first
-publish, set that package's visibility to public before using it for anonymous
-Compose pulls.
+major, and `latest` tags to `ghcr.io/doesntbreaktos/overlord`. Keep the package
+visibility public so Compose can pull it without GitHub authentication.
 
 **4. Open the panel**
 
