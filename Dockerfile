@@ -137,7 +137,7 @@ RUN test "$(wc -l < ./public/index.html)" -lt 20 \
 # Stage 2: runtime (slim)
 # ============================================================
 FROM oven/bun:1-slim AS runtime
-LABEL org.opencontainers.image.source="https://overlord.kyun.li/vxaboveground/overlord"
+LABEL org.opencontainers.image.source="https://github.com/doesntbreaktos/Overlord"
 WORKDIR /app
 
 # openssl/ca-certificates: TLS cert generation + HTTPS validation.

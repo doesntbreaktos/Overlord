@@ -52,7 +52,7 @@ container-build:
       docker buildx build \
         --file Dockerfile \
         --platform "$PLATFORM" \
-        --label "org.opencontainers.image.source=$CI_PROJECT_URL" \
+        --label "org.opencontainers.image.source=https://github.com/doesntbreaktos/Overlord" \
         --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
         --cache-from "type=registry,ref=$CI_REGISTRY_IMAGE:buildcache-$ARCH" \
         --cache-to "type=registry,ref=$CI_REGISTRY_IMAGE:buildcache-$ARCH,mode=max" \

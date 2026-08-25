@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://overlord.kyun.li/vxaboveground/overlord/raw/branch/main/Overlord-Server/public/assets/overlord.png" alt="Overlord" width="280" />
+  <img src="https://raw.githubusercontent.com/doesntbreaktos/Overlord/main/Overlord-Server/public/assets/overlord.png" alt="Overlord" width="280" />
 </p>
 
 # Overlord
@@ -8,7 +8,7 @@
 
 Hello, I made this project for fun.
 
-The canonical repository is [Gitea](https://overlord.kyun.li/vxaboveground/overlord); GitLab is maintained as a mirror and release-registry host.
+The canonical repository is [GitHub](https://github.com/doesntbreaktos/Overlord); [GitLab](https://gitlab.com/vxaboveground/overlord) is maintained as a mirror and release-registry host.
 
 The server is TypeScript on Node/Bun. The client is Go. Operators talk to the server through a web panel or the Electron desktop app, and agents connect over encrypted WebSockets.
 
@@ -105,7 +105,7 @@ docker compose version
 **2. Get the project**
 
 ```powershell
-git clone https://overlord.kyun.li/vxaboveground/overlord.git
+git clone https://github.com/doesntbreaktos/Overlord.git
 cd Overlord
 ```
 
@@ -192,14 +192,14 @@ Make a folder for it, drop in the file, and you're done:
 
 ```bash
 mkdir overlord && cd overlord
-wget https://overlord.kyun.li/vxaboveground/overlord/raw/branch/main/docker-compose.yml
+wget https://raw.githubusercontent.com/doesntbreaktos/Overlord/main/docker-compose.yml
 ```
 
 No `wget`? Use `curl`:
 
 ```bash
 mkdir overlord && cd overlord
-curl -O https://overlord.kyun.li/vxaboveground/overlord/raw/branch/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/doesntbreaktos/Overlord/main/docker-compose.yml
 ```
 
 **3. Start it**
@@ -269,7 +269,7 @@ docker compose version
 **2. Get the project**
 
 ```bash
-git clone https://overlord.kyun.li/vxaboveground/overlord.git
+git clone https://github.com/doesntbreaktos/Overlord.git
 cd Overlord
 ```
 

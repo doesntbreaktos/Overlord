@@ -15,7 +15,7 @@ show a connection error and nothing will work. That is expected.
    The server is a separate component that you must deploy yourself.
 
 2. Full setup instructions are in the README:
-   https://overlord.kyun.li/vxaboveground/overlord/src/branch/main/README.md
+   https://github.com/doesntbreaktos/Overlord/blob/main/README.md
 
 3. Once the server is running, open this desktop client and enter the
    server's IP address (or hostname) and port on the connection screen.

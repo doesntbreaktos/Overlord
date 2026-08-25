@@ -40,7 +40,7 @@ Thumbs.db
 .gitattributes
 
 # CI metadata is not needed in container build contexts
-.gitea/
+.github/
 .gitlab/
 .gitlab-ci.yml
 

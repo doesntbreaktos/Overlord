@@ -8,7 +8,7 @@ on:
       - "scripts/generate-wire-protocol.ts"
       - "go.work"
       - "go.work.sum"
-      - ".gitea/workflows/client-tests.yml"
+      - ".github/workflows/client-tests.yml"
   pull_request:
     paths:
       - "Overlord-Client/**"
@@ -16,7 +16,7 @@ on:
       - "scripts/generate-wire-protocol.ts"
       - "go.work"
       - "go.work.sum"
-      - ".gitea/workflows/client-tests.yml"
+      - ".github/workflows/client-tests.yml"
   workflow_dispatch:
 
 permissions:
@@ -30,10 +30,10 @@ jobs:
         working-directory: Overlord-Client
     steps:
       - name: Checkout repository
-        uses: https://github.com/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: https://github.com/actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: Overlord-Client/go.mod
           cache: true
