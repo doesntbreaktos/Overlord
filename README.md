@@ -208,8 +208,18 @@ curl -O https://raw.githubusercontent.com/doesntbreaktos/Overlord/main/docker-co
 docker compose up -d
 ```
 
-The image is currently pulled from the GitLab mirror's container registry at
-`registry.gitlab.com/vxaboveground/overlord:latest` on first run.
+The Compose file itself is downloaded from the canonical GitHub repository.
+Until the first GHCR release is published and made public, the default image
+continues to come from the GitLab mirror's container registry at
+`registry.gitlab.com/vxaboveground/overlord:latest`.
+
+Maintainers can publish a matching multi-architecture GHCR image from the
+[Publish GHCR image workflow](https://github.com/doesntbreaktos/Overlord/actions/workflows/publish-ghcr.yml).
+Select **Run workflow** and enter the version currently declared by the server
+and agent (for example, `3.1.0`). The workflow publishes version, major/minor,
+major, and `latest` tags to `ghcr.io/doesntbreaktos/overlord`. After the first
+publish, set that package's visibility to public before using it for anonymous
+Compose pulls.
 
 **4. Open the panel**
 
