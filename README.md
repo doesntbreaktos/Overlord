@@ -214,7 +214,7 @@ continues to come from the GitLab mirror's container registry at
 `registry.gitlab.com/vxaboveground/overlord:latest`.
 
 Maintainers can publish a matching multi-architecture GHCR image from the
-[Publish GHCR image workflow](https://github.com/doesntbreaktos/Overlord/actions/workflows/publish-ghcr.yml).
+[overlord-ci workflow](https://github.com/doesntbreaktos/Overlord/actions/workflows/docker-publish.yml).
 Select **Run workflow** and enter the version currently declared by the server
 and agent (for example, `3.1.0`). The workflow publishes version, major/minor,
 major, and `latest` tags to `ghcr.io/doesntbreaktos/overlord`. After the first

@@ -1,17 +1,12 @@
-name: Publish GHCR image
-run-name: Publish GHCR v${{ inputs.release_version }}
+name: overlord-ci
 
 on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Release version to publish, for example 3.1.0"
+        description: 'Release version to publish, for example 1.2.3'
         required: true
         type: string
-
-concurrency:
-  group: ghcr-release
-  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -21,17 +16,38 @@ permissions:
   contents: read
 
 jobs:
-  validate:
-    name: Validate release version
+  approve-release:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.source-version.outputs.version }}
+    environment: overlord-ci
+    steps:
+      - name: Confirm release approval
+        run: echo "Approved release ${RELEASE_VERSION}"
+
+  build-and-push:
+    needs: approve-release
+    name: Build and push (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            artifact: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            artifact: arm64
+    permissions:
+      contents: read
+      packages: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Validate source and release versions
-        id: source-version
+      - name: Read Source Version
+        id: srcver
         shell: bash
         run: |
           set -euo pipefail
@@ -53,39 +69,29 @@ jobs:
             exit 1
           fi
 
+          major="${client_version%%.*}"
+          rest="${client_version#*.}"
+          minor="${rest%%.*}"
+
+          {
+            echo "version=$client_version"
+            echo "major=$major"
+            echo "minor=$minor"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate Release Version Matches Source Version
+        shell: bash
+        run: |
+          set -euo pipefail
           if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release version must be strict SemVer like 3.1.0; got $RELEASE_VERSION" >&2
+            echo "Release version must be strict semver like 1.2.3; got ${RELEASE_VERSION}" >&2
             exit 1
           fi
-
-          if [[ "$RELEASE_VERSION" != "$client_version" ]]; then
-            echo "Release version ($RELEASE_VERSION) does not match source version ($client_version)" >&2
+          src_version="${{ steps.srcver.outputs.version }}"
+          if [[ "$RELEASE_VERSION" != "$src_version" ]]; then
+            echo "Release version ($RELEASE_VERSION) does not match source version ($src_version)" >&2
             exit 1
           fi
-
-          echo "version=$client_version" >> "$GITHUB_OUTPUT"
-
-  build:
-    name: Build ${{ matrix.platform }}
-    needs: validate
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            runner: ubuntu-latest
-            artifact: amd64
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
-            artifact: arm64
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Normalize image name
         run: printf 'IMAGE_NAME=%s\n' "${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -100,23 +106,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract image metadata
-        id: metadata
+      - name: Extract metadata
+        id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/doesntbreaktos/Overlord
-            org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+          tags: |
+            type=raw,value=${{ steps.srcver.outputs.version }}
+            type=raw,value=${{ steps.srcver.outputs.major }}.${{ steps.srcver.outputs.minor }}
+            type=raw,value=${{ steps.srcver.outputs.major }}
+            type=raw,value=latest
 
-      - name: Build and push image digest
+      - name: Build and push server image
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
-          labels: ${{ steps.metadata.outputs.labels }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=server-${{ matrix.artifact }}
           cache-to: type=gha,mode=max,scope=server-${{ matrix.artifact }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
@@ -138,16 +146,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  publish:
-    name: Publish multi-architecture image
-    needs:
-      - validate
-      - build
+  merge-and-publish:
+    name: Merge and publish multi-architecture image
+    needs: build-and-push
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
       packages: write
+
     steps:
       - name: Normalize image name
         run: printf 'IMAGE_NAME=%s\n' "${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -170,14 +177,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract release tags
-        id: metadata
+        id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}},value=${{ needs.validate.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.validate.outputs.version }}
-            type=semver,pattern={{major}},value=${{ needs.validate.outputs.version }}
+            type=semver,pattern={{version}},value=${{ env.RELEASE_VERSION }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_VERSION }}
+            type=semver,pattern={{major}},value=${{ env.RELEASE_VERSION }}
             type=raw,value=latest
 
       - name: Create and push multi-architecture manifest
@@ -194,4 +201,4 @@ jobs:
           docker buildx imagetools create "${tag_args[@]}" "${digest_args[@]}"
 
       - name: Verify published manifest
-        run: docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${{ needs.validate.outputs.version }}"
+        run: docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${RELEASE_VERSION}"
