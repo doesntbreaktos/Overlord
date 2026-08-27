@@ -11,7 +11,7 @@ desktop-build-windows:
         - Overlord-Desktop/src/**/*
         - Overlord-Desktop/src-tauri/**/*
   before_script:
-    - npm install --global --prefix "$env:CI_PROJECT_DIR\.tools" bun@1.3.14
+    - npm install --global --prefix "$env:CI_PROJECT_DIR\.tools" bun@1.4.0
     - $env:PATH = "$env:CI_PROJECT_DIR\.tools;$env:USERPROFILE\.cargo\bin;$env:PATH"
     - |
       if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {

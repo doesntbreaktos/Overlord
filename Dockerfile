@@ -10,7 +10,7 @@
 # ============================================================
 # Stage 1: builder
 # ============================================================
-FROM oven/bun:1 AS builder
+FROM oven/bun:1.4.0 AS builder
 WORKDIR /app
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -136,7 +136,7 @@ RUN test "$(wc -l < ./public/index.html)" -lt 20 \
 # ============================================================
 # Stage 2: runtime (slim)
 # ============================================================
-FROM oven/bun:1-slim AS runtime
+FROM oven/bun:1.4.0-slim AS runtime
 LABEL org.opencontainers.image.source="https://github.com/doesntbreaktos/Overlord"
 WORKDIR /app
 

@@ -4,6 +4,7 @@
   "description": "Overlord Desktop Client - Tauri fat client for the Overlord server",
   "author": "K fucking Dot",
   "private": true,
+  "packageManager": "bun@1.4.0",
   "scripts": {
     "vendor": "bun run scripts/vendor.ts",
     "tauri": "tauri",

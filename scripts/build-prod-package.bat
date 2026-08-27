@@ -67,16 +67,6 @@ if errorlevel 1 goto :err
 copy /Y "%SERVER_SRC%\dist\overlord-server-linux-x64" "%RELEASE_DIR%\overlord-server-linux-x64" >nul
 if errorlevel 1 goto :err
 
-echo [6b/11] Copying sharp native module for runtime resolution...
-if exist "%SERVER_SRC%\node_modules\sharp" (
-  robocopy "%SERVER_SRC%\node_modules\sharp" "%RELEASE_DIR%\node_modules\sharp" /E >nul
-  if errorlevel 8 goto :robocopy_err
-)
-if exist "%SERVER_SRC%\node_modules\@img" (
-  robocopy "%SERVER_SRC%\node_modules\@img" "%RELEASE_DIR%\node_modules\@img" /E >nul
-  if errorlevel 8 goto :robocopy_err
-)
-
 echo [7/11] Exporting Overlord-Client source for runtime builds...
 robocopy "%CLIENT_SRC%" "%RELEASE_DIR%\Overlord-Client" /E /XD build .git .vscode >nul
 if errorlevel 8 goto :robocopy_err

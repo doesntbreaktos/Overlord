@@ -26,10 +26,11 @@
 server-tests-linux:
   extends: .server-test-rules
   stage: test
-  image: oven/bun:1.3.14
+  image: oven/bun:1.4.0
   script:
     - cd Overlord-Server
     - bun install --frozen-lockfile
+    - bun run check:dedupe
     - bun run typecheck
     - bun run protocol:check
     - bun run test
@@ -40,7 +41,7 @@ server-tests-windows:
   tags:
     - saas-windows-medium-amd64
   before_script:
-    - npm install --global --prefix "$env:CI_PROJECT_DIR\.tools" bun@1.3.14
+    - npm install --global --prefix "$env:CI_PROJECT_DIR\.tools" bun@1.4.0
     - $env:PATH = "$env:CI_PROJECT_DIR\.tools;$env:PATH"
   script:
     - Set-Location Overlord-Server
@@ -52,7 +53,7 @@ server-tests-windows:
 server-e2e-tests:
   extends: .server-test-rules
   stage: test
-  image: oven/bun:1.3.14
+  image: oven/bun:1.4.0
   script:
     - cd Overlord-Server
     - bun install --frozen-lockfile
