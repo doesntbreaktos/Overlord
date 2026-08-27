@@ -1,0 +1,249 @@
+name: overlord-ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version to publish, for example 1.2.3'
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  RELEASE_VERSION: ${{ inputs.release_version }}
+
+permissions:
+  contents: read
+
+jobs:
+  approve-release:
+    runs-on: ubuntu-latest
+    environment: overlord-ci
+    steps:
+      - name: Confirm release approval
+        run: echo "Approved release ${RELEASE_VERSION}"
+
+  build-backstage-dll:
+    needs: approve-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate Release Version
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Release version must be strict semver like 1.2.3; got '$env:RELEASE_VERSION'"
+          }
+
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install MinGW cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+
+      - name: Set up Rust cross-compilation target
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.85.0
+          targets: x86_64-pc-windows-gnu
+
+      - name: Build BackstageInjection DLL
+        run: bash scripts/build-backstage-dll.sh
+
+      - name: Upload backstage DLLs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backstage-dll
+          path: |
+            Overlord-Server/dist-clients/BackstageInjection.x64.dll
+          if-no-files-found: error
+          retention-days: 1
+
+  build-and-push:
+    needs: build-backstage-dll
+    name: Build and push (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            artifact: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            artifact: arm64
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download backstage DLLs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: backstage-dll
+          path: Overlord-Server/dist-clients
+
+      - name: Read Source Version
+        id: srcver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          client_version=$(grep -oP 'var\s+AgentVersion\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' Overlord-Client/cmd/agent/config/config.go)
+          server_version=$(grep -oP 'export\s+const\s+SERVER_VERSION\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' Overlord-Server/src/version.ts)
+          package_version=$(node -p "require('./Overlord-Server/package.json').version")
+
+          if [[ -z "$client_version" || -z "$server_version" || -z "$package_version" ]]; then
+            echo "Failed to parse one or more version values from source files" >&2
+            exit 1
+          fi
+
+          if ! { [[ "$client_version" == "$server_version" ]] && [[ "$client_version" == "$package_version" ]]; }; then
+            echo "Version mismatch detected:" >&2
+            echo "  client(config.go): $client_version" >&2
+            echo "  server(version.ts): $server_version" >&2
+            echo "  package(package.json): $package_version" >&2
+            exit 1
+          fi
+
+          major="${client_version%%.*}"
+          rest="${client_version#*.}"
+          minor="${rest%%.*}"
+
+          {
+            echo "version=$client_version"
+            echo "major=$major"
+            echo "minor=$minor"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate Release Version Matches Source Version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release version must be strict semver like 1.2.3; got ${RELEASE_VERSION}" >&2
+            exit 1
+          fi
+          src_version="${{ steps.srcver.outputs.version }}"
+          if [[ "$RELEASE_VERSION" != "$src_version" ]]; then
+            echo "Release version ($RELEASE_VERSION) does not match source version ($src_version)" >&2
+            exit 1
+          fi
+
+      - name: Normalize image name
+        run: printf 'IMAGE_NAME=%s\n' "${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.srcver.outputs.version }}
+            type=raw,value=${{ steps.srcver.outputs.major }}.${{ steps.srcver.outputs.minor }}
+            type=raw,value=${{ steps.srcver.outputs.major }}
+            type=raw,value=latest
+
+      - name: Build and push server image
+        id: build
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=server-${{ matrix.artifact }}
+          cache-to: type=gha,mode=max,scope=server-${{ matrix.artifact }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export image digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          test -n "$digest"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-digest-${{ matrix.artifact }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-and-publish:
+    name: Merge and publish multi-architecture image
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Normalize image name
+        run: printf 'IMAGE_NAME=%s\n' "${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Download image digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: image-digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract release tags
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.RELEASE_VERSION }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_VERSION }}
+            type=semver,pattern={{major}},value=${{ env.RELEASE_VERSION }}
+            type=raw,value=latest
+
+      - name: Create and push multi-architecture manifest
+        working-directory: /tmp/digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 2
+          mapfile -t tag_args < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          digest_args=()
+          for digest_file in *; do
+            digest_args+=("${REGISTRY}/${IMAGE_NAME}@sha256:${digest_file}")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${digest_args[@]}"
+
+      - name: Verify published manifest
+        run: docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${RELEASE_VERSION}"
