@@ -164,6 +164,7 @@ export const COMMAND_TYPES = [
   "backstage_stop",
   "backstage_window_list",
   "client_logs_request",
+  "clipboard_get",
   "clipboard_set",
   "clipboard_sync_start",
   "clipboard_sync_stop",
@@ -400,6 +401,10 @@ export const COMMAND_VERSION_SUPPORT = {
     "max": 1
   },
   "client_logs_request": {
+    "min": 1,
+    "max": 1
+  },
+  "clipboard_get": {
     "min": 1,
     "max": 1
   },

@@ -987,6 +987,21 @@ func HandleCommand(ctx context.Context, env *runtime.Env, envelope map[string]in
 		log.Printf("clipboard_sync: stop")
 		sendCommandResultSafe(env, cmdID, true, "")
 		return nil
+	case "clipboard_get":
+		payload, _ := envelope["payload"].(map[string]interface{})
+		source := "rd"
+		if payload != nil {
+			if v, ok := payload["source"].(string); ok && (v == "rd" || v == "backstage") {
+				source = v
+			}
+		}
+		if err := ClipboardSyncGet(ctx, env, source); err != nil {
+			log.Printf("clipboard_sync: get failed: %v", err)
+			sendCommandResultSafe(env, cmdID, false, err.Error())
+			return nil
+		}
+		sendCommandResultSafe(env, cmdID, true, "")
+		return nil
 	case "clipboard_set":
 		payload, _ := envelope["payload"].(map[string]interface{})
 		text := ""
@@ -995,7 +1010,9 @@ func HandleCommand(ctx context.Context, env *runtime.Env, envelope map[string]in
 				text = v
 			}
 		}
-		ClipboardSyncSet(text)
+		if err := ClipboardSyncSet(ctx, text); err != nil {
+			log.Printf("clipboard_sync: write failed: %v", err)
+		}
 		sendCommandResultSafe(env, cmdID, true, "")
 		return nil
 	case "desktop_mouse_move":

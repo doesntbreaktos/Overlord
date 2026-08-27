@@ -151,6 +151,7 @@
     "backstage_stop",
     "backstage_window_list",
     "client_logs_request",
+    "clipboard_get",
     "clipboard_set",
     "clipboard_sync_start",
     "clipboard_sync_stop",

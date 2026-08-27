@@ -59,7 +59,7 @@ export const MAX_BACKSTAGE_APPS = 10_000;
 export const MAX_BACKSTAGE_WINDOWS = 100_000;
 export const MAX_BACKSTAGE_MONITORS = 256;
 export const MAX_BACKSTAGE_ICON_CHARS_TOTAL = 256 * 1024 * 1024;
-export const MAX_CLIPBOARD_CONTENT_BYTES = 64 * 1024 * 1024;
+export const MAX_CLIPBOARD_CONTENT_BYTES = 64 * 1024;
 
 function boundedAgentText(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";
@@ -703,8 +703,21 @@ export function handleRemoteDesktopViewerMessage(ws: ServerWebSocket<SocketData>
     }
     case "clipboard_sync": {
       if (!state.isStreaming) break;
-      const text = String(payload.text || "");
-      if (text) {
+      if (typeof payload.text === "string") {
+        const text = payload.text;
+        if (Buffer.byteLength(text, "utf8") > MAX_CLIPBOARD_CONTENT_BYTES) break;
+        sendDesktopCommand(target, "clipboard_set", { text });
+      }
+      break;
+    }
+    case "clipboard_pull": {
+      sendDesktopCommand(target, "clipboard_get", { source: "rd" });
+      break;
+    }
+    case "clipboard_push": {
+      if (typeof payload.text !== "string") break;
+      const text = payload.text;
+      if (Buffer.byteLength(text, "utf8") <= MAX_CLIPBOARD_CONTENT_BYTES) {
         sendDesktopCommand(target, "clipboard_set", { text });
       }
       break;
@@ -1067,11 +1080,11 @@ export function handlebackstageWindowListResult(clientId: string, payload: any) 
 }
 
 export function handleClipboardContent(clientId: string, payload: any) {
-  const text = typeof payload?.text === "string" ? payload.text : "";
+  if (typeof payload?.text !== "string") return;
+  const text = payload.text;
   const source = boundedAgentText(payload?.source, 32);
   if (
-    !text
-    || (source !== "rd" && source !== "backstage")
+    (source !== "rd" && source !== "backstage")
     || text.length > MAX_CLIPBOARD_CONTENT_BYTES
     || Buffer.byteLength(text, "utf8") > MAX_CLIPBOARD_CONTENT_BYTES
   ) return;
@@ -1465,8 +1478,21 @@ export function handlebackstageViewerMessage(ws: ServerWebSocket<SocketData>, ra
     }
     case "clipboard_sync": {
       if (!state.isStreaming) break;
-      const text = String(payload.text || "");
-      if (text) {
+      if (typeof payload.text === "string") {
+        const text = payload.text;
+        if (Buffer.byteLength(text, "utf8") > MAX_CLIPBOARD_CONTENT_BYTES) break;
+        sendbackstageCommand(target, "clipboard_set", { text });
+      }
+      break;
+    }
+    case "clipboard_pull": {
+      sendDesktopCommand(target, "clipboard_get", { source: "backstage" });
+      break;
+    }
+    case "clipboard_push": {
+      if (typeof payload.text !== "string") break;
+      const text = payload.text;
+      if (Buffer.byteLength(text, "utf8") <= MAX_CLIPBOARD_CONTENT_BYTES) {
         sendbackstageCommand(target, "clipboard_set", { text });
       }
       break;

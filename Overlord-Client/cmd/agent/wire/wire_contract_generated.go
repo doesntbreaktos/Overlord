@@ -101,6 +101,7 @@ const (
 	CommandBackstageStop CommandType = "backstage_stop"
 	CommandBackstageWindowList CommandType = "backstage_window_list"
 	CommandClientLogsRequest CommandType = "client_logs_request"
+	CommandClipboardGet CommandType = "clipboard_get"
 	CommandClipboardSet CommandType = "clipboard_set"
 	CommandClipboardSyncStart CommandType = "clipboard_sync_start"
 	CommandClipboardSyncStop CommandType = "clipboard_sync_stop"
@@ -312,6 +313,7 @@ var CommandTypes = [...]CommandType{
 	CommandBackstageStop,
 	CommandBackstageWindowList,
 	CommandClientLogsRequest,
+	CommandClipboardGet,
 	CommandClipboardSet,
 	CommandClipboardSyncStart,
 	CommandClipboardSyncStop,
@@ -463,6 +465,7 @@ var CommandVersionSupport = map[CommandType]CommandVersionRange{
 	CommandBackstageStop: {Min: 1, Max: 1},
 	CommandBackstageWindowList: {Min: 1, Max: 1},
 	CommandClientLogsRequest: {Min: 1, Max: 1},
+	CommandClipboardGet: {Min: 1, Max: 1},
 	CommandClipboardSet: {Min: 1, Max: 1},
 	CommandClipboardSyncStart: {Min: 1, Max: 1},
 	CommandClipboardSyncStop: {Min: 1, Max: 1},

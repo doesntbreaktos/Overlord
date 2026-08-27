@@ -198,6 +198,15 @@
                     <input type="checkbox" id="printWindowFallbackCtrl" checked /> PrintWindow Fallback
                   </label>
                 </div>
+                <div class="mt-3 rounded-lg border border-slate-700 bg-slate-900/60 p-2" aria-labelledby="clipboardActionsLabel">
+                  <div id="clipboardActionsLabel" class="text-xs uppercase tracking-wide text-slate-500 mb-2">Clipboard</div>
+                  <textarea id="clipboardText" rows="2" maxlength="65536" readonly class="w-full resize-y rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100" placeholder="Clipboard preview"></textarea>
+                  <div class="grid grid-cols-2 gap-2 mt-2">
+                    <button id="clipboardFromUserBtn" type="button" class="rounded bg-slate-700 hover:bg-slate-600 px-2 py-1.5 text-xs text-slate-100" title="Bring the remote user's clipboard down to this browser"><i class="fa-solid fa-arrow-down mr-1"></i>Copy from user</button>
+                    <button id="clipboardToUserBtn" type="button" class="rounded bg-violet-700 hover:bg-violet-600 px-2 py-1.5 text-xs text-white" title="Send this browser's clipboard up to the remote user"><i class="fa-solid fa-arrow-up mr-1"></i>Copy to user</button>
+                  </div>
+                  <div id="clipboardStatus" class="mt-1 min-h-[1rem] text-[11px] text-slate-500" aria-live="polite"></div>
+                </div>
               </div>
 
             </div>

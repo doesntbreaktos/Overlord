@@ -415,6 +415,20 @@ describe("remote desktop viewer control", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]?.payload?.reason).toBe("viewer_backpressure");
   });
+
+  test("supports one-shot clipboard pull and push while the stream is stopped", () => {
+    const clientId = `rd-clipboard-${Date.now().toString(36)}`;
+    const { agentWs } = createClient(clientId);
+    const viewer = createMockWs({ clientId });
+    handleRemoteDesktopViewerOpen(viewer as any);
+
+    handleRemoteDesktopViewerMessage(viewer as any, JSON.stringify({ type: "clipboard_pull" }));
+    handleRemoteDesktopViewerMessage(viewer as any, JSON.stringify({ type: "clipboard_push", text: "" }));
+
+    const commands = agentCommands(agentWs);
+    expect(commands.find((msg) => msg.commandType === "clipboard_get")?.payload).toEqual({ source: "rd" });
+    expect(commands.find((msg) => msg.commandType === "clipboard_set")?.payload).toEqual({ text: "" });
+  });
 });
 
 describe("backstage viewer control", () => {
@@ -468,5 +482,19 @@ describe("backstage viewer control", () => {
     expect(commands.filter((msg) => msg.commandType === "backstage_stop")).toHaveLength(1);
     expect(commands.filter((msg) => msg.commandType === "webrtc_stop")).toHaveLength(1);
     expect(backstageStreamingState.get(clientId)?.isStreaming).toBe(false);
+  });
+
+  test("routes one-shot clipboard controls through the backstage source", () => {
+    const clientId = `backstage-clipboard-${Date.now().toString(36)}`;
+    const { agentWs } = createClient(clientId);
+    const viewer = createMockWs({ role: "backstage_viewer", clientId });
+    handlebackstageViewerOpen(viewer as any);
+
+    handlebackstageViewerMessage(viewer as any, JSON.stringify({ type: "clipboard_pull" }));
+    handlebackstageViewerMessage(viewer as any, JSON.stringify({ type: "clipboard_push", text: "hello" }));
+
+    const commands = agentCommands(agentWs);
+    expect(commands.find((msg) => msg.commandType === "clipboard_get")?.payload).toEqual({ source: "backstage" });
+    expect(commands.find((msg) => msg.commandType === "clipboard_set")?.payload).toEqual({ text: "hello" });
   });
 });

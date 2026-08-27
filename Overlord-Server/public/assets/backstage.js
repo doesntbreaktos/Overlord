@@ -116,6 +116,10 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
   const viewerFps = document.getElementById("viewerFps");
   const statusEl = document.getElementById("streamStatus");
   const clipboardSyncCtrl = document.getElementById("clipboardSyncCtrl");
+  const clipboardText = document.getElementById("clipboardText");
+  const clipboardFromUserBtn = document.getElementById("clipboardFromUserBtn");
+  const clipboardToUserBtn = document.getElementById("clipboardToUserBtn");
+  const clipboardStatus = document.getElementById("clipboardStatus");
   const uiaCtrl = document.getElementById("uiaCtrl");
   const printWindowFallbackCtrl = document.getElementById("printWindowFallbackCtrl");
   const backstageResolutionSelect = document.getElementById("backstageResolutionSelect");
@@ -162,8 +166,9 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
   let h264RetryTimer = null;
 
   let clipboardSyncTimer = null;
-  let lastClipboardText = "";
+  let lastClipboardText = null;
   let clipboardSyncActive = false;
+  let clipboardPullPending = false;
 
   let savedDisplay = null;
 
@@ -351,23 +356,74 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
     }
   }
 
+  function setClipboardStatus(message, isError = false) {
+    if (!clipboardStatus) return;
+    clipboardStatus.textContent = message;
+    clipboardStatus.classList.toggle("text-red-400", isError);
+    clipboardStatus.classList.toggle("text-slate-500", !isError);
+  }
+
+  function clipboardTextFits(text) {
+    return new TextEncoder().encode(text).byteLength <= 64 * 1024;
+  }
+
+  async function pushBrowserClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!clipboardTextFits(text)) {
+        setClipboardStatus("Clipboard text is larger than the 64 KiB sync limit.", true);
+        return false;
+      }
+      if (clipboardText) clipboardText.value = text;
+      if (text !== lastClipboardText) {
+        lastClipboardText = text;
+        sendCmd("clipboard_sync", { text });
+      }
+      return true;
+    } catch {
+      setClipboardStatus("Browser clipboard access is blocked. Allow clipboard permission to enable outgoing sync.", true);
+      return false;
+    }
+  }
+
+  function handleClipboardContentMessage(msg) {
+    if (!msg || typeof msg.text !== "string") return;
+    const text = msg.text;
+    lastClipboardText = text;
+    if (clipboardText) clipboardText.value = text;
+    const shouldWrite = clipboardPullPending
+      || (clipboardSyncCtrl && clipboardSyncCtrl.checked && streamState === "streaming");
+    if (!shouldWrite) return;
+    const wasManual = clipboardPullPending;
+    clipboardPullPending = false;
+    const writePromise = navigator.clipboard?.writeText?.(text);
+    if (!writePromise) {
+      setClipboardStatus("Received from user. Select the text above and press Ctrl+C.", true);
+      clipboardText?.focus();
+      clipboardText?.select();
+      return;
+    }
+    writePromise.then(() => {
+      setClipboardStatus(wasManual ? "Copied from user." : "Clipboard synced from user.");
+    }).catch(() => {
+      setClipboardStatus("Received from user. Select the text above and press Ctrl+C.", true);
+      clipboardText?.focus();
+      clipboardText?.select();
+    });
+  }
+
   function startClipboardSync() {
     if (clipboardSyncActive) return;
     clipboardSyncActive = true;
-    lastClipboardText = "";
+    lastClipboardText = null;
     sendCmd("clipboard_sync_start", {});
+    void pushBrowserClipboard();
     clipboardSyncTimer = setInterval(async () => {
       if (!clipboardSyncCtrl || !clipboardSyncCtrl.checked || streamState !== "streaming") {
         stopClipboardSync();
         return;
       }
-      try {
-        const text = await navigator.clipboard.readText();
-        if (text && text !== lastClipboardText) {
-          lastClipboardText = text;
-          sendCmd("clipboard_sync", { text });
-        }
-      } catch {}
+      await pushBrowserClipboard();
     }, 1500);
   }
 
@@ -1559,10 +1615,7 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
         return;
       }
       if (msg && msg.type === "clipboard_content") {
-        if (clipboardSyncCtrl && clipboardSyncCtrl.checked && streamState === "streaming" && msg.text) {
-          lastClipboardText = msg.text;
-          navigator.clipboard.writeText(msg.text).catch(() => {});
-        }
+        handleClipboardContentMessage(msg);
         return;
       }
       return;
@@ -1614,10 +1667,7 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
       return;
     }
     if (msg && msg.type === "clipboard_content") {
-      if (clipboardSyncCtrl && clipboardSyncCtrl.checked && streamState === "streaming" && msg.text) {
-        lastClipboardText = msg.text;
-        navigator.clipboard.writeText(msg.text).catch(() => {});
-      }
+      handleClipboardContentMessage(msg);
       return;
     }
   }
@@ -2121,6 +2171,34 @@ import { createSharedUiSettingsSaver, loadSharedUiSettings } from "./generated/s
     }
     return text.slice(0, maxLength);
   }
+
+  clipboardFromUserBtn?.addEventListener("click", () => {
+    clipboardPullPending = true;
+    setClipboardStatus("Requesting clipboard from user…");
+    sendCmd("clipboard_pull", {});
+    setTimeout(() => {
+      if (!clipboardPullPending) return;
+      clipboardPullPending = false;
+      setClipboardStatus("No clipboard response received.", true);
+    }, 5000);
+  });
+  clipboardToUserBtn?.addEventListener("click", async () => {
+    let text;
+    try {
+      text = await navigator.clipboard.readText();
+      if (clipboardText) clipboardText.value = text;
+    } catch {
+      setClipboardStatus("Browser clipboard access is blocked. Allow clipboard permission and try again.", true);
+      return;
+    }
+    if (!clipboardTextFits(text)) {
+      setClipboardStatus("Clipboard text is larger than the 64 KiB sync limit.", true);
+      return;
+    }
+    sendCmd("clipboard_push", { text });
+    lastClipboardText = text;
+    setClipboardStatus("Copied to user.");
+  });
 
   function boundedClientNumber(value, min, max, fallback = 0) {
     let number;
