@@ -1483,12 +1483,13 @@ import (
 	"fmt"
 	"image"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"overlord-client/cmd/agent/internal/overlordenv"
 )
 
 type NVENCD3D11SmokeOptions struct {
@@ -1842,7 +1843,7 @@ func probeNativeD3D11TextureProfile(device, texture unsafe.Pointer, inputWidth, 
 
 func (e *nativeD3D11TextureH264Encoder) maybeLogEncodeDetail(raw C.nvenc_d3d11_encode_result, frame uint64, forceIDR bool) {
 	total := float64(raw.copy_ms + raw.blt_ms + raw.map_ms + raw.submit_ms + raw.lock_ms)
-	traceMode := strings.ToLower(strings.TrimSpace(os.Getenv("OVERLORD_NVENC_D3D11_TRACE")))
+	traceMode := strings.ToLower(strings.TrimSpace(overlordenv.Getenv("OVERLORD_NVENC_D3D11_TRACE")))
 	verbose := traceMode == "all" || traceMode == "verbose"
 	traceSlow := traceMode == "1" || traceMode == "true" || traceMode == "yes" || traceMode == "on" || traceMode == "slow"
 	if !verbose && !traceSlow && raw.stage == 0 {
@@ -1891,7 +1892,7 @@ func nvencBufferFormatForDXGI(dxgiFormat uint32) (C.NV_ENC_BUFFER_FORMAT, string
 }
 
 func preferredNVENCD3D11OutputModes() []int {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("OVERLORD_NVENC_D3D11_OUTPUT"))) {
+	switch strings.ToLower(strings.TrimSpace(overlordenv.Getenv("OVERLORD_NVENC_D3D11_OUTPUT"))) {
 	case "nv12":
 		return []int{0}
 	case "bgra", "argb":
@@ -1918,7 +1919,7 @@ func nvencD3D11OutputModeName(mode int) string {
 }
 
 func envBool(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	switch strings.ToLower(strings.TrimSpace(overlordenv.Getenv(name))) {
 	case "1", "true", "yes", "on":
 		return true
 	default:

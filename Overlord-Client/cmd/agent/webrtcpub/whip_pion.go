@@ -11,12 +11,12 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"overlord-client/cmd/agent/internal/overlordenv"
 	agentTLS "overlord-client/cmd/agent/tlsconfig"
 
 	"github.com/pion/interceptor"
@@ -89,7 +89,7 @@ func rtcpKeyframeTimestamp(kind Kind) *atomic.Int64 {
 }
 
 func honorRTCPKeyframes() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("OVERLORD_WEBRTC_RTCP_KEYFRAMES"))) {
+	switch strings.ToLower(strings.TrimSpace(overlordenv.Getenv("OVERLORD_WEBRTC_RTCP_KEYFRAMES"))) {
 	case "0", "false", "no", "off":
 		return false
 	default:

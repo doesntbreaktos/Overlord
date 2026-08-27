@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"overlord-client/cmd/agent/internal/overlordenv"
 	"overlord-client/cmd/agent/persistence"
 )
 
@@ -121,7 +122,7 @@ func writeDeferredUpdateBatch(sourcePath string, targetPath string) (string, str
 	}
 	defer tmpFile.Close()
 
-	debugLogPath := strings.TrimSpace(os.Getenv("OVERLORD_UPDATE_DEBUG_LOG"))
+	debugLogPath := strings.TrimSpace(overlordenv.Getenv("OVERLORD_UPDATE_DEBUG_LOG"))
 	if debugLogPath == "" {
 		debugLogPath = filepath.Join(os.TempDir(), fmt.Sprintf("overlord-update-%d.log", os.Getpid()))
 	}

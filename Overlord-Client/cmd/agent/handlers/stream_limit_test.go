@@ -1,3 +1,5 @@
+//go:build !builder_release
+
 package handlers
 
 import (

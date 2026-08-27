@@ -7,7 +7,6 @@ import (
 	"image"
 	"image/draw"
 	"log"
-	"os"
 	goruntime "runtime"
 	"sort"
 	"strconv"
@@ -17,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"overlord-client/cmd/agent/internal/overlordenv"
 	rt "overlord-client/cmd/agent/runtime"
 	"overlord-client/cmd/agent/webrtcpub"
 	"overlord-client/cmd/agent/wire"
@@ -648,13 +648,13 @@ func shouldLogFrame(now time.Time) bool {
 func captureMetricsEnabled() bool {
 	metricsOnce.Do(func() {
 		for _, name := range []string{"OVERLORD_CAPTURE_METRICS", "OVERLORD_DEV_METRICS"} {
-			switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+			switch strings.ToLower(strings.TrimSpace(overlordenv.Getenv(name))) {
 			case "1", "true", "yes", "on":
 				metricsEnabled = true
 				return
 			}
 		}
-		switch strings.ToLower(strings.TrimSpace(os.Getenv("OVERLORD_MODE"))) {
+		switch strings.ToLower(strings.TrimSpace(overlordenv.Getenv("OVERLORD_MODE"))) {
 		case "dev", "development":
 			metricsEnabled = true
 		}
@@ -795,7 +795,7 @@ var (
 
 func loadOnceInt(target *int64, def int) int64 {
 	jpegQualityOnce.Do(func() {
-		if env := os.Getenv("OVERLORD_JPEG_QUALITY"); env != "" {
+		if env := overlordenv.Getenv("OVERLORD_JPEG_QUALITY"); env != "" {
 			if v, err := strconv.Atoi(env); err == nil {
 				*target = int64(v)
 				return
@@ -859,7 +859,7 @@ const (
 var videoKeyframeEvery = configuredVideoKeyframeInterval()
 
 func configuredVideoKeyframeInterval() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("OVERLORD_VIDEO_KEYFRAME_INTERVAL"))
+	raw := strings.TrimSpace(overlordenv.Getenv("OVERLORD_VIDEO_KEYFRAME_INTERVAL"))
 	if raw == "" || strings.EqualFold(raw, "off") || raw == "0" {
 		return 0
 	}
@@ -1732,7 +1732,7 @@ func encodeBlockRaw(img *image.RGBA, x, y, w, h int) []byte {
 
 func defaultCodec() string {
 	blockCodecOnce.Do(func() {
-		codec := strings.ToLower(os.Getenv(blockCodecEnv))
+		codec := strings.ToLower(overlordenv.Getenv(blockCodecEnv))
 		switch codec {
 		case "h264":
 			cachedBlockCodec = "h264"

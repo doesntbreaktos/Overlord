@@ -42,6 +42,11 @@ export function createBaseGoLdflags(targetOs: string, stripDebug: boolean): stri
   return flags.join(" ");
 }
 
+export function enforceBuilderReleaseTag(tags: readonly string[]): string[] {
+  if (tags.includes("builder_release")) return [...tags];
+  return ["builder_release", ...tags];
+}
+
 function isClientModuleDir(dir: string): boolean {
   return (
     fs.existsSync(path.join(dir, "go.mod")) &&
@@ -1611,7 +1616,7 @@ func runBoundFiles() {
         let baseTags: string[] = [];
         // UI-builder artifacts ignore runtime OVERLORD_* environment overrides.
         // Direct go run/test builds (including start-dev.bat) do not carry this tag.
-        baseTags.push("builder_release");
+        baseTags = enforceBuilderReleaseTag(baseTags);
         if (config.enableNvenc === false) baseTags.push("no_nvenc");
         if (config.enableAmf === false) baseTags.push("no_amf");
         if (config.enableQsv === false) baseTags.push("no_qsv");
@@ -1704,13 +1709,12 @@ func runBoundFiles() {
 
         // A plugin may replace the tag list, but cannot disable the builder's
         // environment-isolation contract.
-        if (!baseTags.includes("builder_release")) {
-          baseTags.push("builder_release");
-        }
+        baseTags = enforceBuilderReleaseTag(baseTags);
 
         const runBuild = async (tags: string[], outputPath: string) => {
+          const effectiveTags = enforceBuilderReleaseTag(tags);
           const buildArgs: string[] = [];
-          if (tags.length > 0) buildArgs.push("-tags", tags.join(" "));
+          if (effectiveTags.length > 0) buildArgs.push("-tags", effectiveTags.join(" "));
           buildArgs.push("-trimpath", "-buildvcs=false");
           if (ldflags) buildArgs.push(`-ldflags=${ldflags}`);
           buildArgs.push("-o", outputPath, "./cmd/agent");

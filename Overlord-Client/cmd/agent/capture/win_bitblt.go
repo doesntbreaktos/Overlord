@@ -6,13 +6,14 @@ import (
 	"image"
 	"log"
 	"math"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
+
+	"overlord-client/cmd/agent/internal/overlordenv"
 )
 
 var (
@@ -538,7 +539,7 @@ func (s *capState) reset() {
 func captureScale() float64 {
 	scaleOnce.Do(func() {
 		s := 1.0
-		if env := os.Getenv("OVERLORD_RD_SCALE"); env != "" {
+		if env := overlordenv.Getenv("OVERLORD_RD_SCALE"); env != "" {
 			if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0.2 && v <= 1.5 {
 				s = v
 			}

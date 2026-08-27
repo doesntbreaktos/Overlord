@@ -1,12 +1,13 @@
 package capture
 
 import (
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"overlord-client/cmd/agent/internal/overlordenv"
 )
 
 const defaultMaxInFlightFrames int64 = 2
@@ -108,7 +109,7 @@ func frameSlotLimitForFPS(fps int) int64 {
 	case fps >= 60:
 		limit = 4
 	}
-	if env := strings.TrimSpace(os.Getenv("OVERLORD_DESKTOP_IN_FLIGHT_FRAMES")); env != "" {
+	if env := strings.TrimSpace(overlordenv.Getenv("OVERLORD_DESKTOP_IN_FLIGHT_FRAMES")); env != "" {
 		if v, err := strconv.Atoi(env); err == nil {
 			switch {
 			case v < 1:

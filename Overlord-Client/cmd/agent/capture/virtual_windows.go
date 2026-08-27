@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"overlord-client/cmd/agent/internal/overlordenv"
 	"overlord-client/cmd/agent/webrtcpub"
 	"overlord-client/cmd/agent/wire"
 )
@@ -1319,7 +1320,7 @@ func enableFirstVirtualDisplay() {
 }
 
 func installVirtualDriver() error {
-	driverURL := os.Getenv(virtualDriverURLEnv)
+	driverURL := overlordenv.Getenv(virtualDriverURLEnv)
 
 	tmpDir := filepath.Join(os.TempDir(), virtualDriverDirName)
 	if err := os.MkdirAll(tmpDir, 0755); err != nil {
@@ -1331,7 +1332,7 @@ func installVirtualDriver() error {
 	if driverURL == "" {
 		driverURL = resolveLatestDriverURL()
 		if driverURL == "" {
-			log.Printf("virtual: could not resolve latest driver URL. Set %s to a direct download URL.", virtualDriverURLEnv)
+			log.Printf("virtual: could not resolve latest driver URL; a direct URL may be supplied in development mode")
 			return fmt.Errorf("could not resolve driver URL")
 		}
 	}

