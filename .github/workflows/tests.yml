@@ -1,0 +1,139 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      server: ${{ steps.filter.outputs.server }}
+      client: ${{ steps.filter.outputs.client }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Detect changed paths
+        uses: dorny/paths-filter@6852f92c20ea7fd3b0c25de3b5112db3a98da050 # v3
+        id: filter
+        with:
+          filters: |
+            server:
+              - 'Overlord-Server/**'
+              - 'Overlord-Client/cmd/agent/wire/wire_contract_generated.go'
+              - 'protocol/**'
+              - 'scripts/generate-wire-protocol.ts'
+              - '.github/workflows/tests.yml'
+            client:
+              - 'Overlord-Client/**'
+              - 'protocol/**'
+              - 'scripts/generate-wire-protocol.ts'
+              - 'go.work'
+              - 'go.work.sum'
+              - '.github/workflows/tests.yml'
+
+  server-tests:
+    needs: changes
+    if: needs.changes.outputs.server == 'true' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: Overlord-Server
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install server dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check dependency deduplication
+        run: bun run check:dedupe
+
+      - name: Typecheck server
+        run: bun run typecheck
+
+      - name: Verify generated wire protocol
+        run: bun run protocol:check
+
+      - name: Run server tests
+        run: bun run test
+
+  server-e2e-tests:
+    needs: changes
+    if: needs.changes.outputs.server == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Overlord-Server
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install server dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Chromium and system dependencies
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run browser tests
+        run: bun run test:e2e
+
+  client-tests:
+    needs: changes
+    if: needs.changes.outputs.client == 'true' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: Overlord-Client
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: Overlord-Client/go.mod
+          cache: true
+          cache-dependency-path: |
+            Overlord-Client/go.sum
+            go.work.sum
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Vendor third-party headers (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/vendor-onevpl-headers.sh
+          bash scripts/vendor-amf-headers.sh
+
+      - name: Run client tests
+        run: go test ./...
