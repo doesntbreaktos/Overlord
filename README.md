@@ -67,7 +67,19 @@ native installation or move the server to Linux.
 
 > Windows and macOS use `docker-compose.windows.yml`. Linux uses the default `docker-compose.yml` (host networking).
 
-After the first start, open `https://localhost:5173`. Default login is `admin` / `admin` unless you set `OVERLORD_USER` / `OVERLORD_PASS`. First startup writes generated secrets to `data/save.json` (inside the container: `/app/data/save.json`) — keep that file private and back it up.
+After the first start, open `https://localhost:5173`. The default username is
+`admin`. Unless you set `OVERLORD_PASS`, first startup generates a one-time
+password in `data/save.json` (inside the container: `/app/data/save.json`). For
+Docker Compose, retrieve it with:
+
+```text
+docker compose exec overlord-server grep bootstrapPassword /app/data/save.json
+```
+
+The first login requires a password change, after which the plaintext bootstrap
+password is removed from `save.json`. Existing installations are not reset; if
+an older installation still uses `admin` / `admin`, change it manually. Keep
+`save.json` private and back it up.
 
 Agents authenticate only through the `X-Agent-Token` header. Rebuild any
 legacy agent that still places its token in the connection URL; query-string

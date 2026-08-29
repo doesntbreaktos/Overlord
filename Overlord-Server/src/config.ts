@@ -559,13 +559,17 @@ export function loadConfig(): Config {
 
   const passwordFromEnv = process.env.OVERLORD_PASS;
   const passwordFromConfig = fileConfig.auth?.password;
-  const finalBootstrapPassword =
-    passwordFromEnv ||
-    passwordFromConfig ||
-    DEFAULT_CONFIG.auth.password;
   const passwordIsUserSupplied =
     Boolean(passwordFromEnv) ||
     Boolean(passwordFromConfig);
+  const finalBootstrapPassword =
+    passwordFromEnv ||
+    passwordFromConfig ||
+    savedSecrets.auth?.bootstrapPassword?.trim() ||
+    "";
+  if (passwordIsUserSupplied && savedSecrets.auth?.bootstrapPassword) {
+    saveChanged = true;
+  }
 
   const keywordsEnv = process.env.OVERLORD_NOTIFICATION_KEYWORDS;
   const keywordsFromEnv = keywordsEnv
@@ -1061,16 +1065,22 @@ thumbnails: {
   };
 
   if (saveChanged) {
+    const nextAuthSecrets: NonNullable<SaveSecrets["auth"]> = {
+      ...savedSecrets.auth,
+      jwtSecret: finalJwtSecret,
+      agentToken: finalAgentToken,
+    };
+    if (passwordIsUserSupplied) {
+      delete nextAuthSecrets.bootstrapPassword;
+    } else if (finalBootstrapPassword) {
+      nextAuthSecrets.bootstrapPassword = finalBootstrapPassword;
+    }
     const nextSecrets: SaveSecrets = {
       ...savedSecrets,
-      auth: {
-        ...savedSecrets.auth,
-        jwtSecret: finalJwtSecret,
-        agentToken: finalAgentToken,
-      },
+      auth: nextAuthSecrets,
     };
-    persistSaveSecrets(savePath, nextSecrets);
-    logger.info(
+    const persisted = persistSaveSecrets(savePath, nextSecrets);
+    if (persisted) logger.info(
       `Generated runtime secrets are stored at ${savePath}. Keep this file private.`,
     );
   }
@@ -1229,6 +1239,50 @@ export async function updateTlsConfig(
 
   await writePersistentFileConfig(fileConfig);
   return next;
+}
+
+export function clearSavedBootstrapPassword(): boolean {
+  const savePath = resolve(ensureDataDir(), "save.json");
+  const savedSecrets = loadSaveSecrets(savePath);
+  if (!savedSecrets.auth?.bootstrapPassword) return false;
+
+  const nextAuth = { ...savedSecrets.auth };
+  delete nextAuth.bootstrapPassword;
+  const persisted = persistSaveSecrets(savePath, {
+    ...savedSecrets,
+    auth: nextAuth,
+  });
+  if (!persisted) return false;
+
+  if (configCache && !configCache.auth.passwordIsUserSupplied) {
+    configCache.auth.password = "";
+  }
+  logger.info("Removed the one-time bootstrap password from save.json after rotation");
+  return true;
+}
+
+export function ensureGeneratedBootstrapPassword(): string {
+  const current = getConfig();
+  if (current.auth.password) return current.auth.password;
+  if (current.auth.passwordIsUserSupplied) {
+    throw new Error("The configured initial admin password is empty");
+  }
+
+  const savePath = resolve(ensureDataDir(), "save.json");
+  const savedSecrets = loadSaveSecrets(savePath);
+  const bootstrapPassword = generateRandomSecret(48);
+  const nextAuth: NonNullable<SaveSecrets["auth"]> = {
+    ...savedSecrets.auth,
+    bootstrapPassword,
+  };
+  if (!persistSaveSecrets(savePath, { ...savedSecrets, auth: nextAuth })) {
+    throw new Error(`Unable to persist the generated initial admin password to ${savePath}`);
+  }
+  current.auth.password = bootstrapPassword;
+  logger.warn(
+    `Generated a replacement one-time initial admin password at ${savePath} (auth.bootstrapPassword).`,
+  );
+  return bootstrapPassword;
 }
 
 export async function updateOidcConfig(

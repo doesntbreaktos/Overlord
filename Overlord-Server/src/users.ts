@@ -1,7 +1,11 @@
 import { logger } from "./logger";
 import { db } from "./db/connection";
 import { initializeUserSchema } from "./db/user-schema";
-import { getConfig } from "./config";
+import {
+  clearSavedBootstrapPassword,
+  ensureGeneratedBootstrapPassword,
+  getConfig,
+} from "./config";
 
 export type UserRole = "admin" | "operator" | "viewer";
 export type ClientAccessScope = "none" | "allowlist" | "denylist" | "all";
@@ -83,7 +87,7 @@ const userCount = db.prepare("SELECT COUNT(*) as count FROM users").get() as {
 if (userCount.count === 0) {
   const config = getConfig();
   const initialUsername = (config.auth.username || "admin").trim() || "admin";
-  const initialPassword = config.auth.password;
+  const initialPassword = config.auth.password || ensureGeneratedBootstrapPassword();
   const mustChangePassword = config.auth.passwordIsUserSupplied ? 0 : 1;
 
   logger.info("[users] No users found, creating default admin account");
@@ -107,7 +111,7 @@ if (userCount.count === 0) {
   logger.info(`[users] Initial admin account created (username: ${initialUsername})`);
   if (mustChangePassword) {
     logger.warn(
-      "[users] SECURITY WARNING: A default admin account has been created with the fallback password. Sign in and rotate the password immediately. Bootstrap credentials default to admin/admin unless overridden by configuration; the password is not logged.",
+      "[users] A one-time initial admin password was generated. Retrieve auth.bootstrapPassword from data/save.json, sign in, and rotate it immediately.",
     );
   } else {
     logger.info(
@@ -782,6 +786,7 @@ export async function updateUserPassword(
   }
 
   try {
+    const existingUser = getUserById(userId);
     const passwordHash = await Bun.password.hash(newPassword, {
       algorithm: "bcrypt",
       cost: 10,
@@ -790,6 +795,9 @@ export async function updateUserPassword(
     db.prepare(
       "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
     ).run(passwordHash, userId);
+    if (existingUser?.created_by === "system" && existingUser.must_change_password) {
+      clearSavedBootstrapPassword();
+    }
     return { success: true };
   } catch (err: any) {
     console.error("[users] Update password error:", err);
