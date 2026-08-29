@@ -222,7 +222,8 @@ export async function rebuildBackstageDll(
       return buf;
     };
 
-    const built = path.join(crateDir, "target", RUST_TARGET, "release", "BackstageInjection.dll");
+    const cargoTargetDir = fullEnv.CARGO_TARGET_DIR || path.join(crateDir, "target");
+    const built = path.join(cargoTargetDir, RUST_TARGET, "release", "BackstageInjection.dll");
     const buildArtifact = async (loaderEnv: Record<string, string>, destination: string) => {
       const proc = Bun.spawn(
         [

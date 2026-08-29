@@ -631,6 +631,25 @@ The compose setup uses a persistent volume for runtime client builds:
 - Mount: `/app/client-build-cache`
 - Env: `OVERLORD_CLIENT_BUILD_CACHE_DIR` (default `/app/client-build-cache`)
 
+The server runs as UID/GID `1000:1000` with all Linux capabilities dropped and
+a read-only root filesystem. A one-shot Compose service repairs ownership on
+volumes created by older root-running releases. The mutable Go agent source is
+copied into an ephemeral `tmpfs` at startup, while finished builds and compiler
+caches remain in persistent volumes. MediaMTX runs as `65534:65534` with the
+same read-only and capability restrictions.
+
+### Self-signed certificate identity
+
+New self-signed certificates use independently randomized country, region,
+locality, organization, organizational unit, and common-name values. Endpoint
+validation still uses the configured hostname/IP SANs. On startup, the exact
+legacy `O=Overlord` self-signed profile is reissued with randomized metadata
+using its existing private key. This changes the certificate subject,
+thumbprint, and browser trust entry but preserves the SPKI pin embedded in
+agents. Reinstall the downloaded certificate in browsers/OS trust stores after
+the first upgraded restart. Set `OVERLORD_TLS_MIGRATE_LEGACY_CERT=false` only
+to postpone this migration.
+
 ### macOS CGO builds on Linux/Docker
 
 When a macOS target is selected with CGO enabled, the builder asks for a user-provided macOS SDK archive. Package the complete `MacOSX*.sdk` directory as `.tar.xz`, `.tar.gz`, `.tgz`, or `.tar` and upload it from the Build page. The archive must contain the SDK's `System/Library/Frameworks` and `usr` directories.

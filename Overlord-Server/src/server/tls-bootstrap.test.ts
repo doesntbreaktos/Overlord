@@ -42,4 +42,31 @@ describe("TLS identity pin bootstrap", () => {
     expect(computeCertificateSpkiPin(certificatePem)).toBe(expectedPin);
     expect(getActiveTlsSpkiPins()).toEqual([expectedPin, rotationPin]);
   });
+
+  test("migrates the legacy branded certificate without changing its SPKI pin", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "overlord-tls-legacy-"));
+    tempRoots.push(root);
+    const certPath = path.join(root, "server.crt");
+    const keyPath = path.join(root, "server.key");
+    const generated = Bun.spawnSync([
+      "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-subj", "/C=US/ST=State/L=City/O=Overlord/OU=IT/CN=localhost",
+      "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+      "-keyout", keyPath, "-out", certPath, "-days", "30",
+    ]);
+    expect(generated.exitCode).toBe(0);
+
+    const legacyPem = readFileSync(certPath, "utf8");
+    const legacyPin = computeCertificateSpkiPin(legacyPem);
+    expect(new X509Certificate(legacyPem).subject).toContain("O=Overlord");
+
+    const result = await prepareTlsOptions({ certPath, keyPath });
+    const migratedPem = readFileSync(certPath, "utf8");
+    const migratedCertificate = new X509Certificate(migratedPem);
+    expect(result.source).toBe("self-signed");
+    expect(computeCertificateSpkiPin(migratedPem)).toBe(legacyPin);
+    expect(migratedCertificate.subject).not.toContain("Overlord");
+    expect(migratedCertificate.subject).toMatch(/O=Service-[0-9a-f]{16}/);
+    expect(migratedCertificate.subjectAltName).toContain("DNS:localhost");
+  });
 });

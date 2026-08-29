@@ -9,6 +9,13 @@ services:
       cache_to:
         - type=local,dest=.docker-cache/buildx,mode=max
     container_name: overlord-server
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,mode=1777
+      - /app/Overlord-Client:rw,nosuid,nodev,size=128m,uid=1000,gid=1000,mode=0755
     # Host networking: the container shares the host's network stack directly.
     # Every port the server binds (5173, SOCKS5 proxies, etc.) is accessible
     # on the host with zero overhead — no per-port proxy process.
@@ -27,6 +34,7 @@ services:
       - OVERLORD_TLS_CERT=/app/certs/server.crt
       - OVERLORD_TLS_KEY=/app/certs/server.key
       - OVERLORD_TLS_CA=
+      - OVERLORD_TLS_MIGRATE_LEGACY_CERT=${OVERLORD_TLS_MIGRATE_LEGACY_CERT:-true}
       - OVERLORD_TLS_SPKI_PINS=${OVERLORD_TLS_SPKI_PINS:-}
       # Set true only behind a trusted reverse proxy that terminates TLS (for example Render).
       # Default false keeps current behavior: Overlord terminates TLS in-process.
@@ -59,6 +67,7 @@ services:
       - overlord-certs:/app/certs
       - overlord-client-build-cache:/app/client-build-cache
       - overlord-plugins:/app/plugins
+      - overlord-dist-clients:/app/dist-clients
       - overlord-turn-secret:/run/overlord-turn:ro
       # Uncomment to mount host certbot certs read-only
       # - /etc/letsencrypt:/etc/letsencrypt:ro
@@ -73,8 +82,40 @@ services:
       retries: 3
       start_period: 40s
     depends_on:
+      overlord-permissions-init:
+        condition: service_completed_successfully
       turn-secret-init:
         condition: service_completed_successfully
+
+  overlord-permissions-init:
+    image: ghcr.io/doesntbreaktos/overlord:latest
+    user: "0:0"
+    read_only: true
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for dir in /app/data /app/certs /app/client-build-cache /app/plugins /app/dist-clients; do
+          marker="$$dir/.overlord-uid-1000"
+          if [ ! -e "$$marker" ]; then
+            chown -R 1000:1000 "$$dir"
+            touch "$$marker"
+            chown 1000:1000 "$$marker"
+          fi
+        done
+    volumes:
+      - overlord-data:/app/data
+      - overlord-certs:/app/certs
+      - overlord-client-build-cache:/app/client-build-cache
+      - overlord-plugins:/app/plugins
+      - overlord-dist-clients:/app/dist-clients
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
 
   turn-secret-init:
     image: alpine:3.22
@@ -131,4 +172,5 @@ volumes:
   overlord-certs:
   overlord-client-build-cache:
   overlord-plugins:
+  overlord-dist-clients:
   overlord-turn-secret:

@@ -166,9 +166,11 @@ COPY --from=builder /usr/local/go /usr/local/go
 COPY --from=builder /go/bin/garble /go/bin/garble
 
 ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
-ENV GOPATH="/go"
-ENV GOCACHE=/root/.cache/go-build
-ENV GOMODCACHE=/go/pkg/mod
+ENV GOPATH="/app/client-build-cache/go"
+ENV GOCACHE=/app/client-build-cache/go-build
+ENV GOMODCACHE=/app/client-build-cache/go-mod
+ENV GOTMPDIR=/app/client-build-cache/go-tmp
+ENV CARGO_TARGET_DIR=/app/client-build-cache/backstage-target
 
 # Production-only node_modules (drops tailwind, terser, postcss, typescript, ...).
 COPY Overlord-Server/package.json Overlord-Server/bun.lock* ./
@@ -182,16 +184,28 @@ COPY --from=builder /app/dist-clients ./dist-clients
 
 # Go agent source needed at every agent build.
 COPY Overlord-Client/ ./Overlord-Client/
+COPY Overlord-Client/ /opt/overlord-client-source/
 RUN test -s ./Overlord-Client/third_party/nvcodec/nvEncodeAPI.h
 
 # Rust crate + build script needed for on-demand Backstage DLL recompilation
 # (re-randomized loader export) at runtime.
 COPY BackstageInjection-Rust/ ./BackstageInjection-Rust/
 COPY scripts/build-backstage-dll.sh ./scripts/
+COPY scripts/docker-runtime-entrypoint.sh /usr/local/bin/overlord-entrypoint
 
-RUN mkdir -p certs data
+RUN mkdir -p certs data client-build-cache plugins dist-clients \
+    && chmod 0755 /usr/local/bin/overlord-entrypoint \
+    && chown -R bun:bun \
+        /app/certs \
+        /app/data \
+        /app/client-build-cache \
+        /app/plugins \
+        /app/dist-clients \
+        /app/Overlord-Client \
+        /app/BackstageInjection-Rust
 
-# Pre-seed Go module cache so first agent builds work offline.
+# Warm BuildKit's module cache so image rebuilds do not re-download unchanged
+# dependencies. Runtime agent builds use the writable persistent cache above.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     cd /app/Overlord-Client && \
@@ -208,5 +222,8 @@ ENV DATA_DIR=/app/data
 ENV NODE_ENV=production
 ENV OVERLORD_ROOT=/app
 ENV NODE_PATH=/app/node_modules
+ENV HOME=/home/bun
 
+USER bun:bun
+ENTRYPOINT ["/usr/local/bin/overlord-entrypoint"]
 CMD ["bun", "dist/index.js"]

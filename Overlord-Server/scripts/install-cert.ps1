@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 # Overlord Certificate Installer
-# Finds existing Overlord certs in the Windows trust store, removes them if
-# desired, then installs a new one downloaded from the server.
+# Finds legacy branded certs in the Windows trust store, removes them if desired,
+# then verifies and installs a newly downloaded randomized-subject certificate.
 
 $ErrorActionPreference = "Stop"
 
@@ -98,14 +98,14 @@ try {
     exit 1
 }
 
-if ($cert.Subject -notmatch "O\s*=\s*Overlord") {
-    Write-Host "  Warning: this certificate does not appear to be from Overlord." -ForegroundColor Yellow
-    Write-Host "  Subject: $($cert.Subject)" -ForegroundColor Yellow
-    $proceed = Read-Host "  Install anyway? (y/N)"
-    if ($proceed -ne "y" -and $proceed -ne "Y") {
-        Write-Host "  Cancelled." -ForegroundColor Red
-        exit 0
-    }
+Write-Host "  Subject    : $($cert.Subject)" -ForegroundColor White
+Write-Host "  Thumbprint : $($cert.Thumbprint)" -ForegroundColor White
+Write-Host "  Expires    : $($cert.NotAfter.ToString('yyyy-MM-dd'))" -ForegroundColor White
+Write-Host ""
+$proceed = Read-Host "  Verify this thumbprint matches the panel, then install? (y/N)"
+if ($proceed -ne "y" -and $proceed -ne "Y") {
+    Write-Host "  Cancelled." -ForegroundColor Red
+    exit 0
 }
 
 $storeChoice = Read-Host "  Install for [1] Current User or [2] Local Machine? (1/2)"

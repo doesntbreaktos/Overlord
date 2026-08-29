@@ -9,6 +9,13 @@ services:
       cache_to:
         - type=local,dest=.docker-cache/buildx,mode=max
     container_name: overlord-server
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,mode=1777
+      - /app/Overlord-Client:rw,nosuid,nodev,size=128m,uid=1000,gid=1000,mode=0755
     ports:
       - "${OVERLORD_PUBLISH_HOST:-0.0.0.0}:${PORT:-5173}:5173"
       # HTTP/3 uses QUIC over UDP on the same port as HTTPS/TCP.
@@ -27,6 +34,7 @@ services:
       OVERLORD_TLS_CERT: ${OVERLORD_TLS_CERT:-/app/certs/server.crt}
       OVERLORD_TLS_KEY: ${OVERLORD_TLS_KEY:-/app/certs/server.key}
       OVERLORD_TLS_CA: ${OVERLORD_TLS_CA:-}
+      OVERLORD_TLS_MIGRATE_LEGACY_CERT: ${OVERLORD_TLS_MIGRATE_LEGACY_CERT:-true}
       # Required for generated-agent pinning when TLS is terminated by a proxy.
       # May contain current,next pins during certificate key rotation.
       OVERLORD_TLS_SPKI_PINS: ${OVERLORD_TLS_SPKI_PINS:-}
@@ -59,6 +67,8 @@ services:
       OVERLORD_TURN_SECRET_FILE: /run/overlord-turn/secret
       OVERLORD_TURN_CREDENTIAL_TTL_SECONDS: ${OVERLORD_TURN_CREDENTIAL_TTL_SECONDS:-3600}
     depends_on:
+      overlord-permissions-init:
+        condition: service_completed_successfully
       mediamtx:
         condition: service_started
       turn-secret-init:
@@ -68,6 +78,7 @@ services:
       - overlord-certs:/app/certs
       - overlord-client-build-cache:/app/client-build-cache
       - overlord-plugins:/app/plugins
+      - overlord-dist-clients:/app/dist-clients
       - overlord-turn-secret:/run/overlord-turn:ro
       # Uncomment to mount host certbot certs read-only
       # - /etc/letsencrypt:/etc/letsencrypt:ro
@@ -84,6 +95,36 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  overlord-permissions-init:
+    image: ${DOCKER_IMAGE:-ghcr.io/doesntbreaktos/overlord:latest}
+    user: "0:0"
+    read_only: true
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for dir in /app/data /app/certs /app/client-build-cache /app/plugins /app/dist-clients; do
+          marker="$$dir/.overlord-uid-1000"
+          if [ ! -e "$$marker" ]; then
+            chown -R 1000:1000 "$$dir"
+            touch "$$marker"
+            chown 1000:1000 "$$marker"
+          fi
+        done
+    volumes:
+      - overlord-data:/app/data
+      - overlord-certs:/app/certs
+      - overlord-client-build-cache:/app/client-build-cache
+      - overlord-plugins:/app/plugins
+      - overlord-dist-clients:/app/dist-clients
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
 
   turn-secret-init:
     image: alpine:3.22
@@ -144,6 +185,14 @@ services:
   mediamtx:
     image: bluenviron/mediamtx:1.19.2
     container_name: overlord-mediamtx
+    user: "65534:65534"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,mode=1777
     restart: unless-stopped
     command: ["/run/overlord-turn/mediamtx.yml"]
     ports:
@@ -159,6 +208,7 @@ services:
       MTX_RTMP: "no"
       MTX_HLS: "no"
       MTX_SRT: "no"
+      MTX_MOQ: "no"
       # Fixed ICE ports (matched by the port-publish above).
       MTX_WEBRTCLOCALUDPADDRESS: ":8189"
       MTX_WEBRTCLOCALTCPADDRESS: ":8189"
@@ -178,4 +228,5 @@ volumes:
   overlord-certs:
   overlord-client-build-cache:
   overlord-plugins:
+  overlord-dist-clients:
   overlord-turn-secret:

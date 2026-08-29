@@ -1,18 +1,34 @@
 import { describe, expect, test } from "bun:test";
-import { buildSelfSignedOpenSslConfig } from "./certGenerator";
+import {
+  buildSelfSignedOpenSslConfig,
+  generateRandomSelfSignedSubject,
+} from "./certGenerator";
 
 describe("self-signed certificate profile", () => {
-  test("uses neutral subject metadata and minimal default SANs", () => {
-    const config = buildSelfSignedOpenSslConfig("panel.example.test");
-    expect(config).toContain("CN=panel.example.test");
+  test("uses randomized neutral subject metadata and minimal default SANs", () => {
+    const subject = generateRandomSelfSignedSubject();
+    const config = buildSelfSignedOpenSslConfig("panel.example.test", [], subject);
+    expect(config).toContain(`C=${subject.country}`);
+    expect(config).toContain(`ST=${subject.state}`);
+    expect(config).toContain(`L=${subject.locality}`);
+    expect(config).toContain(`O=${subject.organization}`);
+    expect(config).toContain(`OU=${subject.organizationalUnit}`);
+    expect(config).toContain(`CN=${subject.commonName}`);
     expect(config).toContain("DNS.1 = panel.example.test");
     expect(config).toContain("DNS.2 = localhost");
     expect(config).toContain("IP.1 = 127.0.0.1");
     expect(config).toContain("IP.2 = ::1");
     expect(config).not.toContain("Overlord");
     expect(config).not.toContain("*.local");
-    expect(config).not.toMatch(/^O=/m);
-    expect(config).not.toMatch(/^OU=/m);
+    expect(subject.commonName).toMatch(/^host-[0-9a-f]{16}\.invalid$/);
+  });
+
+  test("generates a different subject identity for each certificate", () => {
+    const first = generateRandomSelfSignedSubject();
+    const second = generateRandomSelfSignedSubject();
+    expect(second).not.toEqual(first);
+    expect(first.country).toMatch(/^[A-Z]{2}$/);
+    expect(first.organization).toMatch(/^Service-[0-9a-f]{16}$/);
   });
 
   test("includes only valid explicitly requested interface addresses", () => {
@@ -27,11 +43,10 @@ describe("self-signed certificate profile", () => {
 
   test("treats an IP common name as an IP SAN and rejects config injection", () => {
     const ipConfig = buildSelfSignedOpenSslConfig("192.0.2.20");
-    expect(ipConfig).toContain("CN=192.0.2.20");
     expect(ipConfig).toContain("IP.1 = 192.0.2.20");
 
     const unsafeConfig = buildSelfSignedOpenSslConfig("safe.test\nO=Overlord");
-    expect(unsafeConfig).toContain("CN=localhost");
+    expect(unsafeConfig).toContain("DNS.1 = localhost");
     expect(unsafeConfig).not.toContain("Overlord");
   });
 });

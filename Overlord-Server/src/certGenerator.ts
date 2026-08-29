@@ -1,14 +1,45 @@
 import { spawn } from "child_process";
-import { existsSync, mkdirSync, unlinkSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, unlinkSync } from "fs";
 import { dirname } from "path";
 import { isIP } from "node:net";
+import { randomBytes, X509Certificate } from "node:crypto";
 
-interface CertOptions {
+export interface CertOptions {
   certPath: string;
   keyPath: string;
   commonName?: string;
   daysValid?: number;
   additionalIPs?: string[];
+}
+
+export type SelfSignedSubject = {
+  country: string;
+  state: string;
+  locality: string;
+  organization: string;
+  organizationalUnit: string;
+  commonName: string;
+};
+
+const COUNTRY_CODES = [
+  "AU", "BR", "CA", "CH", "DE", "ES", "FI", "FR", "GB", "IE", "IN",
+  "IS", "IT", "JP", "NL", "NO", "NZ", "PL", "PT", "SE", "SG", "US",
+];
+
+function randomLabel(prefix: string, bytes = 6): string {
+  return `${prefix}-${randomBytes(bytes).toString("hex")}`;
+}
+
+export function generateRandomSelfSignedSubject(): SelfSignedSubject {
+  const country = COUNTRY_CODES[randomBytes(1)[0] % COUNTRY_CODES.length];
+  return {
+    country,
+    state: randomLabel("Region"),
+    locality: randomLabel("Zone"),
+    organization: randomLabel("Service", 8),
+    organizationalUnit: randomLabel("Node", 8),
+    commonName: `${randomLabel("host", 8)}.invalid`,
+  };
 }
 
 function safeCertificateName(value: string | undefined): string {
@@ -27,6 +58,7 @@ function safeCertificateName(value: string | undefined): string {
 export function buildSelfSignedOpenSslConfig(
   commonNameInput = "localhost",
   additionalIPs: string[] = [],
+  subject = generateRandomSelfSignedSubject(),
 ): string {
   const commonName = safeCertificateName(commonNameInput);
   const dnsNames = isIP(commonName)
@@ -53,7 +85,12 @@ req_extensions = req_ext
 x509_extensions = v3_ca
 
 [dn]
-CN=${commonName}
+C=${subject.country}
+ST=${subject.state}
+L=${subject.locality}
+O=${subject.organization}
+OU=${subject.organizationalUnit}
+CN=${subject.commonName}
 
 [req_ext]
 subjectAltName = @alt_names
@@ -67,6 +104,21 @@ extendedKeyUsage = serverAuth
 [alt_names]
 ${altNames}
 `;
+}
+
+export function isLegacyOverlordSelfSignedCertificate(certificatePem: string): boolean {
+  try {
+    const certificate = new X509Certificate(certificatePem);
+    const subject = certificate.subject.replaceAll("\n", ",");
+    return certificate.issuer === certificate.subject &&
+      /(?:^|,)\s*C=US(?:,|$)/.test(subject) &&
+      /(?:^|,)\s*ST=State(?:,|$)/.test(subject) &&
+      /(?:^|,)\s*L=City(?:,|$)/.test(subject) &&
+      /(?:^|,)\s*O=Overlord(?:,|$)/.test(subject) &&
+      /(?:^|,)\s*OU=IT(?:,|$)/.test(subject);
+  } catch {
+    return false;
+  }
 }
 
 export function certificatesExist(certPath: string, keyPath: string): boolean {
@@ -127,6 +179,45 @@ export async function generateSelfSignedCert(
   } catch (error) {
     console.error("[TLS] Failed to generate certificate:", error);
     throw new Error(`Certificate generation failed: ${error}`);
+  }
+}
+
+export async function reissueSelfSignedCertWithExistingKey(
+  options: CertOptions,
+): Promise<void> {
+  const {
+    certPath,
+    keyPath,
+    commonName: commonNameInput = "localhost",
+    daysValid = 825,
+    additionalIPs = [],
+  } = options;
+  const commonName = safeCertificateName(commonNameInput);
+  const certDir = dirname(certPath);
+  const nonce = randomBytes(8).toString("hex");
+  const configPath = `${certDir}/openssl-${nonce}.cnf`;
+  const temporaryCertPath = `${certPath}.${nonce}.tmp`;
+
+  try {
+    await Bun.write(configPath, buildSelfSignedOpenSslConfig(commonName, additionalIPs));
+    await execCommand("openssl", [
+      "req",
+      "-x509",
+      "-key",
+      keyPath,
+      "-out",
+      temporaryCertPath,
+      "-days",
+      daysValid.toString(),
+      "-config",
+      configPath,
+    ]);
+    chmodSync(temporaryCertPath, 0o644);
+    chmodSync(keyPath, 0o600);
+    renameSync(temporaryCertPath, certPath);
+  } finally {
+    try { unlinkSync(configPath); } catch {}
+    try { unlinkSync(temporaryCertPath); } catch {}
   }
 }
 

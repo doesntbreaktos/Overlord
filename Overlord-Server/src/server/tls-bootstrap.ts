@@ -1,4 +1,11 @@
-import { certificatesExist, generateSelfSignedCert, getLocalIPs, isOpenSSLAvailable } from "../certGenerator";
+import {
+  certificatesExist,
+  generateSelfSignedCert,
+  getLocalIPs,
+  isLegacyOverlordSelfSignedCertificate,
+  isOpenSSLAvailable,
+  reissueSelfSignedCertWithExistingKey,
+} from "../certGenerator";
 import { logger } from "../logger";
 import { X509Certificate, createHash } from "crypto";
 import path from "path";
@@ -54,6 +61,22 @@ function publishActiveTlsPins(certificatePem: string): void {
 export function getActiveTlsSpkiPins(): string[] {
   if (activeTlsSpkiPins.length > 0) return [...activeTlsSpkiPins];
   return normalizeSpkiPins(process.env.OVERLORD_TLS_SPKI_PINS);
+}
+
+function selfSignedCertificateOptions(params: TlsBootstrapParams) {
+  const includeLocalIPs = ["1", "true", "yes", "on"].includes(
+    String(process.env.OVERLORD_TLS_INCLUDE_LOCAL_IPS || "").trim().toLowerCase(),
+  );
+  const requestedDays = Number(process.env.OVERLORD_SELF_SIGNED_CERT_DAYS || 825);
+  return {
+    certPath: params.certPath,
+    keyPath: params.keyPath,
+    commonName: process.env.OVERLORD_HOSTNAME || "localhost",
+    daysValid: Number.isInteger(requestedDays)
+      ? Math.max(30, Math.min(3650, requestedDays))
+      : 825,
+    additionalIPs: includeLocalIPs ? getLocalIPs() : [],
+  };
 }
 
 export async function prepareTlsOptions(params: TlsBootstrapParams): Promise<TlsBootstrapResult> {
@@ -118,30 +141,33 @@ export async function prepareTlsOptions(params: TlsBootstrapParams): Promise<Tls
       throw new Error("OpenSSL is required for certificate generation");
     }
 
-    const includeLocalIPs = ["1", "true", "yes", "on"].includes(
-      String(process.env.OVERLORD_TLS_INCLUDE_LOCAL_IPS || "").trim().toLowerCase(),
-    );
-    const localIPs = includeLocalIPs ? getLocalIPs() : [];
-    const hostname = process.env.OVERLORD_HOSTNAME || "localhost";
-    const requestedDays = Number(process.env.OVERLORD_SELF_SIGNED_CERT_DAYS || 825);
-    const daysValid = Number.isInteger(requestedDays)
-      ? Math.max(30, Math.min(3650, requestedDays))
-      : 825;
-
     try {
-      await generateSelfSignedCert({
-        certPath: params.certPath,
-        keyPath: params.keyPath,
-        commonName: hostname,
-        daysValid,
-        additionalIPs: localIPs,
-      });
+      await generateSelfSignedCert(selfSignedCertificateOptions(params));
     } catch (err) {
       logger.error("[TLS] Failed to generate certificates:", err);
       throw err;
     }
   } else {
     logger.info(`[TLS] Using existing certificates: ${params.certPath}`);
+    const migrateLegacyCertificate = !["0", "false", "no", "off"].includes(
+      String(process.env.OVERLORD_TLS_MIGRATE_LEGACY_CERT || "true").trim().toLowerCase(),
+    );
+    const existingCertificatePem = await Bun.file(params.certPath).text();
+    if (migrateLegacyCertificate && isLegacyOverlordSelfSignedCertificate(existingCertificatePem)) {
+      if (!(await isOpenSSLAvailable())) {
+        throw new Error("OpenSSL is required to migrate the legacy self-signed certificate");
+      }
+      const pinBeforeMigration = computeCertificateSpkiPin(existingCertificatePem);
+      logger.info("[TLS] Reissuing legacy self-signed certificate with randomized subject metadata");
+      await reissueSelfSignedCertWithExistingKey(selfSignedCertificateOptions(params));
+      const migratedCertificatePem = await Bun.file(params.certPath).text();
+      const pinAfterMigration = computeCertificateSpkiPin(migratedCertificatePem);
+      if (pinAfterMigration !== pinBeforeMigration) {
+        throw new Error("Legacy TLS certificate migration unexpectedly changed the SPKI pin");
+      }
+      logger.info("[TLS] Legacy certificate subject migrated without changing the agent SPKI pin");
+      source = "self-signed";
+    }
   }
 
   try {
