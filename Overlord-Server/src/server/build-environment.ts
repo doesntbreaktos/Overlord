@@ -3,6 +3,8 @@
 // secrets or make otherwise identical UI builds depend on the host machine.
 // Keep only the small OS baseline required to locate and execute toolchains;
 // target-specific Go/compiler variables are added explicitly by the builder.
+import path from "path";
+
 const BUILD_ENV_BASELINE_KEYS = [
   "PATH",
   "Path",
@@ -29,4 +31,17 @@ export function createIsolatedBuildEnv(
     if (value !== undefined) isolated[key] = value;
   }
   return isolated;
+}
+
+export function createIsolatedGoBuildEnv(
+  cacheRoot: string,
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...createIsolatedBuildEnv(source),
+    GOCACHE: path.join(cacheRoot, "go-build"),
+    GOMODCACHE: path.join(cacheRoot, "go-mod"),
+    GOTMPDIR: path.join(cacheRoot, "go-tmp"),
+    GARBLE_CACHE: path.join(cacheRoot, "garble"),
+  };
 }

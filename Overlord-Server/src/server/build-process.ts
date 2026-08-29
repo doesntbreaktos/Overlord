@@ -22,7 +22,7 @@ import { runDonut } from "./donut-manager";
 import { buildLinuxShellcode } from "./linux-shellcode-manager";
 import { runSgn } from "./sgn-manager";
 import { resolveContainedPath } from "./upload-security";
-import { createIsolatedBuildEnv } from "./build-environment";
+import { createIsolatedGoBuildEnv } from "./build-environment";
 import { cleanupMacosSdkUpload, extractAndValidateMacosSdk } from "./macos-sdk-manager";
 import { getActiveTlsSpkiPins } from "./tls-bootstrap";
 import { installProviderArtifacts, providerStagingDirectory } from "./plugin-build-provider";
@@ -888,10 +888,14 @@ export async function startBuildProcess(
     const cacheRoot = resolveClientBuildCacheRoot();
     const goBuildCacheDir = path.join(cacheRoot, "go-build");
     const goModCacheDir = path.join(cacheRoot, "go-mod");
+    const goTmpDir = path.join(cacheRoot, "go-tmp");
+    const garbleCacheDir = path.join(cacheRoot, "garble");
 
     await Bun.$`mkdir -p ${outDir}`.quiet();
     fs.mkdirSync(goBuildCacheDir, { recursive: true });
     fs.mkdirSync(goModCacheDir, { recursive: true });
+    fs.mkdirSync(goTmpDir, { recursive: true });
+    fs.mkdirSync(garbleCacheDir, { recursive: true });
     sendToStream({ type: "output", text: `Build directory: ${outDir}\n`, level: "info" });
     sendToStream({ type: "output", text: `Client source: ${clientDir}\n`, level: "info" });
     sendToStream({ type: "output", text: `Stub version: ${agentVersion}\n`, level: "info" });
@@ -1005,7 +1009,7 @@ export async function startBuildProcess(
     if (hasAssemblyData && hasWindowsTargets) {
       sendToStream({ type: "status", text: "Generating Windows resource data..." });
 
-      const isolatedBuildEnv = createIsolatedBuildEnv();
+      const isolatedBuildEnv = createIsolatedGoBuildEnv(cacheRoot);
       const goEnvResult = await $`go env GOPATH`.env(isolatedBuildEnv).quiet();
       const goPath = goEnvResult.stdout.toString().trim();
       const goBinDir = process.env.GOBIN || (goPath ? path.join(goPath, "bin") : "");
@@ -1308,13 +1312,11 @@ func runBoundFiles() {
       sendToStream({ type: "output", text: `\n=== Building ${platform} ===\n`, level: "info" });
 
       const env: NodeJS.ProcessEnv = {
-        ...createIsolatedBuildEnv(),
+        ...createIsolatedGoBuildEnv(cacheRoot),
         GOOS: effectiveOs,
         GOARCH: actualArch,
         CGO_ENABLED: config.disableCgo === true ? "0" : "1",
         GOWORK: "off",
-        GOCACHE: goBuildCacheDir,
-        GOMODCACHE: goModCacheDir,
         ...(goarm ? { GOARM: goarm } : {}),
       };
 
