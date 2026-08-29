@@ -23,6 +23,7 @@ function acceptsGzip(req: Request): boolean {
 
 const STATIC_ASSET_CACHE = "public, max-age=31536000, immutable";
 const NO_CACHE = "no-cache";
+const PRIVATE_ASSET_EXTENSIONS = new Set([".map", ".ts", ".tsx"]);
 const MAX_GZIP_CACHE_ENTRIES = 128;
 const MAX_GZIP_CACHE_BYTES = 16 * 1024 * 1024;
 const assetManifestCache = new Map<string, Record<string, string>>();
@@ -189,6 +190,9 @@ export async function handleAssetsRoutes(
   const prefix = isVendor ? /^\/vendor\// : /^\/assets\//;
   const assetsRoot = path.join(deps.PUBLIC_ROOT, subdir);
   const relativePath = decodedPath.replace(prefix, "");
+  if (PRIVATE_ASSET_EXTENSIONS.has(path.extname(relativePath).toLowerCase())) {
+    return new Response("Not found", { status: 404 });
+  }
   const resolvedPath = path.resolve(assetsRoot, relativePath);
   const rootWithSep = assetsRoot.endsWith(path.sep) ? assetsRoot : `${assetsRoot}${path.sep}`;
 

@@ -118,8 +118,10 @@ test.describe("authenticated browser smoke tests", () => {
     await page.goto("/users");
     await expect(page.locator("#password")).toHaveAttribute("autocomplete", "new-password");
 
-    await page.goto("/register.html");
-    await expect(page.locator("#reg-user")).toHaveAttribute("pattern", "[a-zA-Z0-9_\\x2d]+");
     expect(issues).toEqual([]);
+
+    const registrationResponse = await page.request.get("/register.html");
+    expect(registrationResponse.status()).toBe(404);
+    expect(await registrationResponse.text()).toBe("Not found");
   });
 });

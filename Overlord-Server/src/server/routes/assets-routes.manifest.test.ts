@@ -11,6 +11,24 @@ afterEach(async () => {
 });
 
 describe("fingerprinted asset compatibility manifest", () => {
+  test("does not serve TypeScript sources or source maps from public trees", async () => {
+    const publicRoot = await mkdtemp(path.join(os.tmpdir(), "overlord-asset-route-"));
+    tempDirs.push(publicRoot);
+    await mkdir(path.join(publicRoot, "assets"));
+    await writeFile(path.join(publicRoot, "assets", "client.test.ts"), "sensitive source");
+    await writeFile(path.join(publicRoot, "assets", "client.js.map"), "{}");
+
+    for (const assetPath of ["/assets/client.test.ts", "/assets/client.js.map"]) {
+      const url = new URL(`https://panel.example${assetPath}`);
+      const response = await handleAssetsRoutes(new Request(url), url, {
+        PUBLIC_ROOT: publicRoot,
+        secureHeaders: () => ({}),
+        mimeType: () => "application/octet-stream",
+      });
+      expect(response?.status).toBe(404);
+    }
+  });
+
   test("serves a fingerprinted file for an authenticated runtime page's stable reference", async () => {
     const publicRoot = await mkdtemp(path.join(os.tmpdir(), "overlord-asset-route-"));
     tempDirs.push(publicRoot);

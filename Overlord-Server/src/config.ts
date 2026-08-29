@@ -426,6 +426,14 @@ function loadSaveSecrets(savePath: string): SaveSecrets {
     return {};
   }
 
+  if (process.platform !== "win32") {
+    try {
+      chmodSync(savePath, 0o600);
+    } catch (error) {
+      logger.warn(`Failed to restrict secret file permissions at ${savePath}`, error);
+    }
+  }
+
   try {
     const raw = readFileSync(savePath, "utf-8");
     const parsed = JSON.parse(raw);
