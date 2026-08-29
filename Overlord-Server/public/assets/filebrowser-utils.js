@@ -110,6 +110,17 @@ export function joinRemotePath(directory, fileName) {
   return `${directory}${separator}${fileName}`;
 }
 
+export function normalizeRemotePathForComparison(path = "") {
+  const raw = String(path).trim();
+  if (!raw) return "";
+  const windowsPath = /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\");
+  let normalized = raw.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  if (normalized.length > 1 && !/^[A-Za-z]:\/$/.test(normalized)) {
+    normalized = normalized.replace(/\/+$/, "");
+  }
+  return windowsPath ? normalized.toLowerCase() : normalized;
+}
+
 export function formatBytes(bytes) {
   if (bytes === 0 || bytes === 0n) return "0 B";
   const sizes = ["B", "KB", "MB", "GB", "TB"];

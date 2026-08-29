@@ -19,6 +19,7 @@ import {
   getParentPath,
   isPreviewable,
   joinRemotePath,
+  normalizeRemotePathForComparison,
   shouldShowParentDirectory,
 } from "./filebrowser-utils.js";
 
@@ -42,6 +43,13 @@ const VIRTUAL_ROW_HEIGHT = 58;
 const VIRTUAL_OVERSCAN = 8;
 const MAC_PERMISSION_STORAGE_KEY = `filebrowser.macPermissionAllowed.${clientId}.v2`;
 const macPermissionAllowedPaths = new Set(loadMacPermissionAllowedPaths());
+const PATH_AUTONAV_DEBOUNCE_MS = 250;
+const PATH_AUTONAV_REQUEST_TTL_MS = 30_000;
+let pathAutonavTimer = null;
+let pathAutonavSequence = 0;
+let pathAutonavHistoryOrigin = null;
+let pathAutonavHistoryCommitted = false;
+const pendingPathAutonavRequests = new Map();
 
 let directoryEntries = [];
 let filteredDirectoryEntries = [];
@@ -316,6 +324,8 @@ function handleMessage(msg) {
 
 async function listFiles(path, socket = ws, options = {}) {
   const { resetHistory = false, skipHistory = false } = options;
+  cancelPathAutonav();
+  resetPathAutonavHistory();
   if (!(await confirmMacPermissionRisk(path, "open folder"))) {
     return false;
   }
@@ -1200,6 +1210,80 @@ function renderDirectoryStandard(entries, canGoUp, parentPath, disableAnimations
   }
 }
 
+function pathsMatch(left, right) {
+  return normalizeRemotePathForComparison(left) === normalizeRemotePathForComparison(right);
+}
+
+function resetPathAutonavHistory() {
+  pathAutonavHistoryOrigin = null;
+  pathAutonavHistoryCommitted = false;
+}
+
+function beginPathAutonavHistory() {
+  if (pathAutonavHistoryOrigin !== null) return;
+  pathAutonavHistoryOrigin = currentPath;
+  pathAutonavHistoryCommitted = false;
+}
+
+function startPathAutonavSession() {
+  pathAutonavHistoryOrigin = currentPath;
+  pathAutonavHistoryCommitted = false;
+}
+
+function cancelPathAutonav() {
+  pathAutonavSequence += 1;
+  if (pathAutonavTimer !== null) {
+    clearTimeout(pathAutonavTimer);
+    pathAutonavTimer = null;
+  }
+}
+
+function schedulePathAutonav() {
+  beginPathAutonavHistory();
+  cancelPathAutonav();
+  const sequence = pathAutonavSequence;
+  const requestedPath = pathInput.value.trim();
+  if (!requestedPath || pathsMatch(requestedPath, currentPath)) return;
+
+  pathAutonavTimer = setTimeout(async () => {
+    pathAutonavTimer = null;
+    if (sequence !== pathAutonavSequence || ws?.readyState !== WebSocket.OPEN) return;
+    if (!pathsMatch(pathInput.value, requestedPath)) return;
+    if (!(await confirmMacPermissionRisk(requestedPath, "open folder"))) return;
+    if (sequence !== pathAutonavSequence || !pathsMatch(pathInput.value, requestedPath)) return;
+
+    const commandId = `path-autonav-${Date.now()}-${sequence}`;
+    const timeoutId = setTimeout(() => {
+      pendingPathAutonavRequests.delete(commandId);
+    }, PATH_AUTONAV_REQUEST_TTL_MS);
+    pendingPathAutonavRequests.set(commandId, { requestedPath, sequence, timeoutId });
+    send({ type: "file_list", path: requestedPath, commandId });
+  }, PATH_AUTONAV_DEBOUNCE_MS);
+}
+
+function consumePathAutonavResponse(msg) {
+  const request = pendingPathAutonavRequests.get(msg.commandId);
+  if (!request) return null;
+  clearTimeout(request.timeoutId);
+  pendingPathAutonavRequests.delete(msg.commandId);
+
+  const isCurrent = request.sequence === pathAutonavSequence
+    && pathsMatch(pathInput.value, request.requestedPath);
+  return { request, isCurrent };
+}
+
+function commitPathAutonav(path) {
+  if (!pathAutonavHistoryCommitted
+      && pathAutonavHistoryOrigin
+      && !pathsMatch(pathAutonavHistoryOrigin, path)) {
+    pathHistory.push(pathAutonavHistoryOrigin);
+    pathAutonavHistoryCommitted = true;
+  }
+  currentPath = path;
+  updateBreadcrumb(path);
+  updateBackButton();
+}
+
 function renderDirectoryVirtualized(entries, canGoUp, parentPath) {
   clearVirtualizedListMode();
   isVirtualizedList = true;
@@ -1280,6 +1364,11 @@ function renderCurrentDirectory() {
 }
 
 function handleFileList(msg) {
+  const autonav = consumePathAutonavResponse(msg);
+  if (autonav && (!autonav.isCurrent || msg.error)) {
+    return;
+  }
+
   if (msg.error) {
     clearVirtualizedListMode();
     currentPath = msg.path || currentPath;
@@ -1293,6 +1382,9 @@ function handleFileList(msg) {
   enableControls(true);
 
   currentPath = msg.path;
+  if (autonav) {
+    commitPathAutonav(msg.path);
+  }
   directoryEntries = Array.isArray(msg.entries) ? msg.entries : [];
 
   // Sidebar: detect OS/home on first successful listing
@@ -2952,6 +3044,13 @@ pathInput.onkeydown = (e) => {
     }
   }
 };
+
+pathInput.addEventListener("focus", startPathAutonavSession);
+pathInput.addEventListener("input", schedulePathAutonav);
+pathInput.addEventListener("blur", () => {
+  cancelPathAutonav();
+  resetPathAutonavHistory();
+});
 
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#context-menu")) {

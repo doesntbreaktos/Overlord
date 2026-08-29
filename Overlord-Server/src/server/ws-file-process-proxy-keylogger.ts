@@ -572,8 +572,11 @@ export function handleFileBrowserViewerMessage(ws: ServerWebSocket<SocketData>, 
   switch (payload.type) {
     case "file_list":
       if (!isSafeFileBrowserPath(payload.path, true)) return rejectFileBrowserCommand(ws, "Invalid path");
-      if (ws.data.sessionId) trackFileBrowserCommand(commandId, ws.data.sessionId);
-      target.ws.send(encodeMessage({ type: "command", commandType: "file_list", id: commandId, payload: { path: payload.path || "" } } as any));
+      {
+        const fileListCommandId = viewerCommandId(payload.commandId, commandId);
+        if (ws.data.sessionId) trackFileBrowserCommand(fileListCommandId, ws.data.sessionId);
+        target.ws.send(encodeMessage({ type: "command", commandType: "file_list", id: fileListCommandId, payload: { path: payload.path || "" } } as any));
+      }
       metrics.recordCommand("file_list");
       logAudit({
         timestamp: Date.now(),
