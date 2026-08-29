@@ -118,15 +118,22 @@ export async function prepareTlsOptions(params: TlsBootstrapParams): Promise<Tls
       throw new Error("OpenSSL is required for certificate generation");
     }
 
-    const localIPs = getLocalIPs();
+    const includeLocalIPs = ["1", "true", "yes", "on"].includes(
+      String(process.env.OVERLORD_TLS_INCLUDE_LOCAL_IPS || "").trim().toLowerCase(),
+    );
+    const localIPs = includeLocalIPs ? getLocalIPs() : [];
     const hostname = process.env.OVERLORD_HOSTNAME || "localhost";
+    const requestedDays = Number(process.env.OVERLORD_SELF_SIGNED_CERT_DAYS || 825);
+    const daysValid = Number.isInteger(requestedDays)
+      ? Math.max(30, Math.min(3650, requestedDays))
+      : 825;
 
     try {
       await generateSelfSignedCert({
         certPath: params.certPath,
         keyPath: params.keyPath,
         commonName: hostname,
-        daysValid: 3650,
+        daysValid,
         additionalIPs: localIPs,
       });
     } catch (err) {

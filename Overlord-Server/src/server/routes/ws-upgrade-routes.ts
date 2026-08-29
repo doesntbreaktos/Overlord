@@ -13,7 +13,7 @@ type RequestServer = {
 };
 
 type WsUpgradeDeps = {
-  isAuthorizedAgentRequest: (req: Request, url: URL) => boolean;
+  isAuthorizedAgentRequest: (req: Request) => boolean;
 };
 
 function positiveIntEnv(name: string, fallback: number): number {
@@ -274,7 +274,7 @@ export async function handleWsUpgradeRoutes(
 
   const wsMatch = url.pathname.match(/^\/api\/clients\/(.+)\/stream\/ws$/);
   if (wsMatch) {
-    if (!deps.isAuthorizedAgentRequest(req, url)) {
+    if (!deps.isAuthorizedAgentRequest(req)) {
       return new Response("Unauthorized", { status: 401 });
     }
     const clientId = normalizeClaimedClientId(wsMatch[1]);

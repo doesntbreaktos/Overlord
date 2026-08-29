@@ -136,7 +136,7 @@ export async function handlePluginRoutes(
 
   if (req.method === "GET" && url.pathname.startsWith("/api/plugins/pull/")) {
     const agentToken = getConfig().auth.agentToken;
-    if (!isAuthorizedAgentRequest(req, url, agentToken)) {
+    if (!isAuthorizedAgentRequest(req, agentToken)) {
       return new Response("Unauthorized", { status: 401 });
     }
 

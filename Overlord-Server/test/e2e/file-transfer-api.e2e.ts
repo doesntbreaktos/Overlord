@@ -1,4 +1,5 @@
 import { webcrypto } from "node:crypto";
+import WebSocket from "ws";
 import {
   expect,
   request as requestFactory,
@@ -38,7 +39,8 @@ class TransferTestAgent {
       await webcrypto.subtle.exportKey("raw", keyPair.publicKey),
     );
     const socket = new WebSocket(
-      `ws://127.0.0.1:5193/api/clients/${CLIENT_ID}/stream/ws?token=${encodeURIComponent(AGENT_TOKEN)}`,
+      `ws://127.0.0.1:5193/api/clients/${CLIENT_ID}/stream/ws`,
+      { headers: { "X-Agent-Token": AGENT_TOKEN } },
     );
     socket.binaryType = "arraybuffer";
     this.socket = socket;

@@ -7,7 +7,6 @@ describe("Coturn REST credentials", () => {
     const servers = buildTurnIceServers({
       host: "turn.example.test",
       port: 3478,
-      realm: "overlord",
       secret: "test-master-secret",
       ttlSeconds: 3600,
     }, "agent:desktop/session", 1_700_000_000_000);

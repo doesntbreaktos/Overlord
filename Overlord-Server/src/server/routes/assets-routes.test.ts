@@ -12,4 +12,9 @@ describe("asset cache policy", () => {
     expect(assetCacheControl("logo.png")).toContain("immutable");
     expect(assetCacheControl("inter.woff2")).toContain("immutable");
   });
+
+  test("keeps fingerprinted production scripts and stylesheets immutable", () => {
+    expect(assetCacheControl("main.012345abcdef.js")).toContain("immutable");
+    expect(assetCacheControl("generated/ui.abcdef012345.css")).toContain("immutable");
+  });
 });

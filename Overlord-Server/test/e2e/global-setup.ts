@@ -119,7 +119,6 @@ export default async function globalSetup(_config: FullConfig) {
       OVERLORD_PASS: "E2ePassword!2026",
       JWT_SECRET: "e2e-jwt-secret-that-is-only-used-for-browser-tests",
       OVERLORD_AGENT_TOKEN: "e2e-agent-token-that-is-only-used-for-browser-tests",
-      OVERLORD_ALLOW_AGENT_TOKEN_QUERY: "true",
     },
   });
 

@@ -221,8 +221,11 @@ export async function handlePageRoutes(
     return serveFile(deps, "change-password.html");
   }
 
-  // ---- Registration page (always accessible, no auth needed) ----
+  // ---- Registration page (public only while registration is enabled) ----
   if (url.pathname === "/register.html") {
+    if (getConfig().registration.mode === "off") {
+      return new Response("Not found", { status: 404 });
+    }
     return serveFile(deps, "register.html");
   }
 

@@ -84,6 +84,12 @@ echo "[6/6] Exporting Overlord-Lite source and Rust builder plugin..."
 copy_tree_excluding "$LITE_SRC" "$RELEASE_DIR/Overlord-Lite" "target" ".git" ".vscode"
 copy_tree_excluding "$LITE_PLUGIN_SRC" "$RELEASE_DIR/Overlord-Server/plugins/rust-lite-builder" "data" "rust-lite-builder.zip"
 
+echo "[extra] Minifying and fingerprinting production web assets..."
+pushd "$SERVER_SRC" >/dev/null
+bun run scripts/minify-public.ts --dir "$RELEASE_DIR/Overlord-Server/public"
+bun run scripts/fingerprint-public-assets.ts --dir "$RELEASE_DIR/Overlord-Server/public"
+popd >/dev/null
+
 if [[ -d "$DIST_CLIENTS_SRC" ]]; then
   echo "[extra] Copying prebuilt dist-clients..."
   mkdir -p "$RELEASE_DIR/dist-clients"
@@ -100,8 +106,6 @@ export PORT="${PORT:-5173}"
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 export NODE_ENV="${NODE_ENV:-production}"
 bun install
-bun run build:css && bun run vendor
-bun run minify
 bun run src/index.ts
 EOF
 chmod +x "$RELEASE_DIR/start-prod-release.sh"

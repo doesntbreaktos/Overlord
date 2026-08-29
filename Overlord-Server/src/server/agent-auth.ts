@@ -4,7 +4,6 @@ import { timingSafeEqual } from "crypto";
 let warnedDisableAuthIgnored = false;
 let loggedAuthDisabledByEnv = false;
 let loggedAuthDisabledNoToken = false;
-let warnedLegacyQueryAuth = false;
 
 function safeCompare(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -15,7 +14,6 @@ function safeCompare(a: string, b: string): boolean {
 
 export function isAuthorizedAgentRequest(
   req: Request,
-  url: URL,
   agentToken?: string,
 ): boolean {
   const disableAuth =
@@ -47,17 +45,5 @@ export function isAuthorizedAgentRequest(
   }
 
   const headerToken = req.headers.get("x-agent-token");
-  if (headerToken !== null && safeCompare(headerToken, token)) return true;
-
-  const legacyQuerySetting = String(process.env.OVERLORD_ALLOW_AGENT_TOKEN_QUERY || "").trim().toLowerCase();
-  const allowLegacyQuery = legacyQuerySetting !== "false" && legacyQuerySetting !== "0";
-  if (!allowLegacyQuery) return false;
-  if (!warnedLegacyQueryAuth) {
-    warnedLegacyQueryAuth = true;
-    logger.warn("[auth] Legacy agent query-token authentication is enabled; URLs may leak credentials");
-  }
-  const queryToken = url.searchParams.get("token");
-  const isAuthed = queryToken !== null && safeCompare(queryToken, token);
-
-  return isAuthed;
+  return headerToken !== null && safeCompare(headerToken, token);
 }

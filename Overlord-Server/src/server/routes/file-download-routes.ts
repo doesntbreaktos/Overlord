@@ -570,7 +570,7 @@ export async function handleFileDownloadRoutes(
 
   if (req.method === "GET" && url.pathname.startsWith("/api/file/upload/pull/")) {
     const agentToken = getConfig().auth.agentToken;
-    if (!isAuthorizedAgentRequest(req, url, agentToken)) {
+    if (!isAuthorizedAgentRequest(req, agentToken)) {
       return new Response("Unauthorized", { status: 401 });
     }
 

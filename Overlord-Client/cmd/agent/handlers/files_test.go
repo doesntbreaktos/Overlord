@@ -617,7 +617,7 @@ func TestHandleFileUploadHTTP_RewritesUploadPullURLToAgentServer(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHost = r.Host
 		gotPath = r.URL.RequestURI()
-		if gotPath != "/api/file/upload/pull/test-id?token=abc" {
+		if gotPath != "/api/file/upload/pull/test-id?part=1" {
 			t.Fatalf("expected rewritten upload pull path, got %q", gotPath)
 		}
 		_, _ = w.Write(data)
@@ -636,7 +636,7 @@ func TestHandleFileUploadHTTP_RewritesUploadPullURLToAgentServer(t *testing.T) {
 		},
 	}
 
-	publicOriginURL := "https://public.example.invalid/api/file/upload/pull/test-id?token=abc"
+	publicOriginURL := "https://public.example.invalid/api/file/upload/pull/test-id?part=1"
 	if err := HandleFileUploadHTTP(context.Background(), env, "cmd-http-upload-rewrite", destPath, publicOriginURL, int64(len(data))); err != nil {
 		t.Fatalf("HandleFileUploadHTTP failed: %v", err)
 	}

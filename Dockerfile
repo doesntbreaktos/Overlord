@@ -121,13 +121,15 @@ RUN bun run build:css
 RUN bun run build:web:prod
 RUN bun run vendor
 RUN MINIFY_CONCURRENCY=4 bun run minify
+RUN bun run fingerprint:assets
 RUN bun run build:bundle
 
 RUN test "$(wc -l < ./public/index.html)" -lt 20 \
-    && test "$(wc -l < ./public/assets/main.js)" -lt 50 \
-    && test -s ./public/assets/generated/shared-ui-settings.js \
+    && test -s ./public/.asset-manifest.json \
+    && test -n "$(find ./public/assets -maxdepth 1 -name 'main.*.js' -print -quit)" \
+    && test -n "$(find ./public/assets/generated -maxdepth 1 -name 'shared-ui-settings.*.js' -print -quit)" \
     && test ! -e ./public/assets/generated/shared-ui-settings.js.map \
-    && test -s ./public/assets/tailwind.css \
+    && test -n "$(find ./public/assets -maxdepth 1 -name 'tailwind.*.css' -print -quit)" \
     && test -d ./public/vendor/fontawesome \
     && test -s ./dist/index.js \
     && test -s ./dist/server/plugin-runtime/worker-host.js

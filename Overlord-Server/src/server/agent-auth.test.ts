@@ -5,12 +5,6 @@ function makeReq(headers: Record<string, string> = {}): Request {
   return new Request("https://localhost/ws", { headers });
 }
 
-function makeUrl(query: Record<string, string> = {}): URL {
-  const u = new URL("https://localhost/ws");
-  for (const [k, v] of Object.entries(query)) u.searchParams.set(k, v);
-  return u;
-}
-
 describe("isAuthorizedAgentRequest", () => {
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -29,59 +23,35 @@ describe("isAuthorizedAgentRequest", () => {
   });
 
   test("fails closed when agentToken is empty/undefined", () => {
-    expect(isAuthorizedAgentRequest(makeReq(), makeUrl(), "")).toBe(false);
-    expect(isAuthorizedAgentRequest(makeReq(), makeUrl(), undefined)).toBe(false);
+    expect(isAuthorizedAgentRequest(makeReq(), "")).toBe(false);
+    expect(isAuthorizedAgentRequest(makeReq(), undefined)).toBe(false);
   });
 
   test("authenticates via x-agent-token header", () => {
     const token = "secret-agent-token-abc123";
     const req = makeReq({ "x-agent-token": token });
-    expect(isAuthorizedAgentRequest(req, makeUrl(), token)).toBe(true);
-  });
-
-  test("supports query string tokens by default for legacy clients", () => {
-    const token = "secret-agent-token-abc123";
-    const url = makeUrl({ token });
-    expect(isAuthorizedAgentRequest(makeReq(), url, token)).toBe(true);
-  });
-
-  test("allows operators to explicitly disable legacy query tokens", () => {
-    setEnv("OVERLORD_ALLOW_AGENT_TOKEN_QUERY", "false");
-    const token = "secret-agent-token-abc123";
-    const url = makeUrl({ token });
-    expect(isAuthorizedAgentRequest(makeReq(), url, token)).toBe(false);
+    expect(isAuthorizedAgentRequest(req, token)).toBe(true);
   });
 
   test("rejects wrong header token", () => {
     const req = makeReq({ "x-agent-token": "wrong" });
-    expect(isAuthorizedAgentRequest(req, makeUrl(), "correct-token")).toBe(false);
-  });
-
-  test("rejects wrong query token", () => {
-    const url = makeUrl({ token: "wrong" });
-    expect(isAuthorizedAgentRequest(makeReq(), url, "correct-token")).toBe(false);
+    expect(isAuthorizedAgentRequest(req, "correct-token")).toBe(false);
   });
 
   test("rejects when no token is provided but agentToken is set", () => {
-    expect(isAuthorizedAgentRequest(makeReq(), makeUrl(), "required-token")).toBe(false);
+    expect(isAuthorizedAgentRequest(makeReq(), "required-token")).toBe(false);
   });
 
   test("OVERLORD_DISABLE_AGENT_AUTH bypasses in non-production", () => {
     setEnv("OVERLORD_DISABLE_AGENT_AUTH", "true");
     setEnv("NODE_ENV", "development");
-    expect(isAuthorizedAgentRequest(makeReq(), makeUrl(), "secret")).toBe(true);
+    expect(isAuthorizedAgentRequest(makeReq(), "secret")).toBe(true);
   });
 
   test("OVERLORD_DISABLE_AGENT_AUTH is ignored in production", () => {
     setEnv("OVERLORD_DISABLE_AGENT_AUTH", "true");
     setEnv("NODE_ENV", "production");
-    expect(isAuthorizedAgentRequest(makeReq(), makeUrl(), "secret")).toBe(false);
+    expect(isAuthorizedAgentRequest(makeReq(), "secret")).toBe(false);
   });
 
-  test("header token takes priority when both header and query are present", () => {
-    const token = "the-real-token";
-    const req = makeReq({ "x-agent-token": token });
-    const url = makeUrl({ token: "wrong-query-token" });
-    expect(isAuthorizedAgentRequest(req, url, token)).toBe(true);
-  });
 });

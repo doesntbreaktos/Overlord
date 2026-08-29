@@ -52,7 +52,6 @@ services:
       - OVERLORD_FILE_UPLOAD_PULL_TTL_MS=1800000
       - OVERLORD_TURN_HOST=${OVERLORD_TURN_HOST:-127.0.0.1}
       - OVERLORD_TURN_PORT=${OVERLORD_TURN_PORT:-3478}
-      - OVERLORD_TURN_REALM=${OVERLORD_TURN_REALM:-overlord}
       - OVERLORD_TURN_SECRET_FILE=/run/overlord-turn/secret
       - OVERLORD_TURN_CREDENTIAL_TTL_SECONDS=${OVERLORD_TURN_CREDENTIAL_TTL_SECONDS:-3600}
     volumes:
@@ -79,10 +78,26 @@ services:
 
   turn-secret-init:
     image: alpine:3.22
-    command: ["/bin/sh", "-ec", "umask 077; if [ ! -s /run/overlord-turn/secret ]; then head -c 32 /dev/urandom | base64 > /run/overlord-turn/secret; fi; IFS= read -r turn_secret < /run/overlord-turn/secret; printf 'webrtcICEServers2:\n  - url: \"stun:%s:%s\"\n  - url: \"turn:%s:%s?transport=udp\"\n    username: AUTH_SECRET\n    password: \"%s\"\n    clientOnly: true\n  - url: \"turn:%s:%s?transport=tcp\"\n    username: AUTH_SECRET\n    password: \"%s\"\n    clientOnly: true\n' \"$${OVERLORD_TURN_HOST}\" \"$${OVERLORD_TURN_PORT}\" \"$${OVERLORD_TURN_HOST}\" \"$${OVERLORD_TURN_PORT}\" \"$$turn_secret\" \"$${OVERLORD_TURN_HOST}\" \"$${OVERLORD_TURN_PORT}\" \"$$turn_secret\" > /run/overlord-turn/mediamtx.yml; chmod 0444 /run/overlord-turn/secret /run/overlord-turn/mediamtx.yml"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        if [ ! -s /run/overlord-turn/secret ]; then head -c 32 /dev/urandom | base64 > /run/overlord-turn/secret; fi
+        case "$${OVERLORD_TURN_REALM:-}" in *[!A-Za-z0-9.-]*) echo "Invalid OVERLORD_TURN_REALM" >&2; exit 1;; esac
+        if [ "$${#OVERLORD_TURN_REALM}" -gt 253 ]; then echo "OVERLORD_TURN_REALM is too long" >&2; exit 1; fi
+        if [ -n "$${OVERLORD_TURN_REALM:-}" ]; then
+          printf '%s\n' "$${OVERLORD_TURN_REALM}" > /run/overlord-turn/realm
+        elif [ ! -s /run/overlord-turn/realm ]; then
+          realm_id="$$(head -c 32 /dev/urandom | sha256sum | cut -c1-24)"
+          printf 'r-%s.invalid\n' "$$realm_id" > /run/overlord-turn/realm
+        fi
+        IFS= read -r turn_secret < /run/overlord-turn/secret
+        printf 'webrtcICEServers2:\n  - url: "stun:%s:%s"\n  - url: "turn:%s:%s?transport=udp"\n    username: AUTH_SECRET\n    password: "%s"\n    clientOnly: true\n  - url: "turn:%s:%s?transport=tcp"\n    username: AUTH_SECRET\n    password: "%s"\n    clientOnly: true\n' "$${OVERLORD_TURN_HOST}" "$${OVERLORD_TURN_PORT}" "$${OVERLORD_TURN_HOST}" "$${OVERLORD_TURN_PORT}" "$$turn_secret" "$${OVERLORD_TURN_HOST}" "$${OVERLORD_TURN_PORT}" "$$turn_secret" > /run/overlord-turn/mediamtx.yml
+        chmod 0444 /run/overlord-turn/secret /run/overlord-turn/realm /run/overlord-turn/mediamtx.yml
     environment:
       OVERLORD_TURN_HOST: ${OVERLORD_TURN_HOST:-127.0.0.1}
       OVERLORD_TURN_PORT: ${OVERLORD_TURN_PORT:-3478}
+      OVERLORD_TURN_REALM: ${OVERLORD_TURN_REALM:-}
     volumes:
       - overlord-turn-secret:/run/overlord-turn
     restart: "no"
@@ -95,11 +110,12 @@ services:
     command:
       - |
         secret="$$(cat /run/overlord-turn/secret)"
+        realm="$${OVERLORD_TURN_REALM:-$$(cat /run/overlord-turn/realm)}"
         external=""
         if [ -n "$${OVERLORD_TURN_EXTERNAL_IP:-}" ]; then external="--external-ip=$${OVERLORD_TURN_EXTERNAL_IP}"; fi
-        exec turnserver --fingerprint --use-auth-secret --static-auth-secret="$$secret" --realm="$${OVERLORD_TURN_REALM:-overlord}" --listening-port=3478 --min-port=49160 --max-port=49200 --no-tls --no-dtls --no-multicast-peers --log-file=stdout $$external
+        exec turnserver --fingerprint --use-auth-secret --static-auth-secret="$$secret" --realm="$$realm" --listening-port=3478 --min-port=49160 --max-port=49200 --no-tls --no-dtls --no-multicast-peers --log-file=stdout $$external
     environment:
-      OVERLORD_TURN_REALM: ${OVERLORD_TURN_REALM:-overlord}
+      OVERLORD_TURN_REALM: ${OVERLORD_TURN_REALM:-}
       OVERLORD_TURN_EXTERNAL_IP: ${OVERLORD_TURN_EXTERNAL_IP:-}
     volumes:
       - overlord-turn-secret:/run/overlord-turn:ro

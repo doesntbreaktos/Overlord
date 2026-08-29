@@ -212,8 +212,8 @@ metrics.setSnapshotEnricher((snapshot) => {
 });
 
 const config = loadConfig();
-const isAuthorizedAgent = (req: Request, url: URL) =>
-  isAuthorizedAgentRequest(req, url, config.auth.agentToken);
+const isAuthorizedAgent = (req: Request) =>
+  isAuthorizedAgentRequest(req, config.auth.agentToken);
 
 const PORT = config.server.port;
 const HOST = config.server.host;

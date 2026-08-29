@@ -10,7 +10,6 @@ export type OverlordIceServer = {
 type TurnConfig = {
   host: string;
   port: number;
-  realm: string;
   secret: string;
   ttlSeconds: number;
 };
@@ -38,7 +37,6 @@ function loadTurnConfig(): TurnConfig | null {
   return {
     host,
     port,
-    realm: (process.env.OVERLORD_TURN_REALM || "overlord").trim() || "overlord",
     secret,
     ttlSeconds,
   };

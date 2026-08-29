@@ -25,6 +25,7 @@ const STATIC_ASSET_CACHE = "public, max-age=31536000, immutable";
 const NO_CACHE = "no-cache";
 const MAX_GZIP_CACHE_ENTRIES = 128;
 const MAX_GZIP_CACHE_BYTES = 16 * 1024 * 1024;
+const assetManifestCache = new Map<string, Record<string, string>>();
 
 type GzipCacheEntry = {
   bytes: ArrayBuffer;
@@ -37,13 +38,42 @@ let gzipAssetCacheBytes = 0;
 export function assetCacheControl(relativePath: string): string {
   if (relativePath === "custom.css") return NO_CACHE;
   if (relativePath === "notification-sw.js") return NO_CACHE;
+  if (/\.[0-9a-f]{12}\.(?:js|css)$/.test(relativePath)) return STATIC_ASSET_CACHE;
   if (/\.(ico|png|jpg|jpeg|gif|webp|woff2?|ttf|eot|svg)$/.test(relativePath)) {
     return STATIC_ASSET_CACHE;
   }
-  // Script and stylesheet filenames are stable across releases. Revalidate
-  // them so a rebuilt Docker image cannot leave the previous UI cached for a
-  // day (or stale-served for a week). ETags keep unchanged requests cheap.
+  // Development script and stylesheet filenames are stable across releases.
+  // Revalidate them; production builds use fingerprinted immutable names.
   return NO_CACHE;
+}
+
+async function resolveFingerprintedAsset(
+  publicRoot: string,
+  assetsRoot: string,
+  relativePath: string,
+): Promise<string | null> {
+  const manifestPath = path.join(publicRoot, ".asset-manifest.json");
+  let manifest = assetManifestCache.get(manifestPath);
+  if (!manifest) {
+    const manifestFile = Bun.file(manifestPath);
+    if (!(await manifestFile.exists())) return null;
+    try {
+      const parsed = JSON.parse(await manifestFile.text());
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      manifest = parsed as Record<string, string>;
+      assetManifestCache.set(manifestPath, manifest);
+    } catch {
+      return null;
+    }
+  }
+
+  const mappedUrl = manifest[`/assets/${relativePath.replaceAll(path.sep, "/")}`];
+  if (typeof mappedUrl !== "string" || !mappedUrl.startsWith("/assets/")) return null;
+  const mappedRelativePath = mappedUrl.slice("/assets/".length);
+  if (!/\.[0-9a-f]{12}\.(?:js|css)$/.test(mappedRelativePath)) return null;
+  const resolvedPath = path.resolve(assetsRoot, mappedRelativePath);
+  const rootWithSep = assetsRoot.endsWith(path.sep) ? assetsRoot : `${assetsRoot}${path.sep}`;
+  return resolvedPath.startsWith(rootWithSep) ? resolvedPath : null;
 }
 
 function toExactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -166,7 +196,11 @@ export async function handleAssetsRoutes(
     return new Response("Not found", { status: 404 });
   }
 
-  const file = Bun.file(resolvedPath);
+  let file = Bun.file(resolvedPath);
+  if (!(await file.exists()) && isAssets) {
+    const fingerprintedPath = await resolveFingerprintedAsset(deps.PUBLIC_ROOT, assetsRoot, relativePath);
+    if (fingerprintedPath) file = Bun.file(fingerprintedPath);
+  }
   if (await file.exists()) {
     const contentType = deps.mimeType(url.pathname);
     const headers: Record<string, string> = {

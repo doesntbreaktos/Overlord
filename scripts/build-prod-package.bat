@@ -85,6 +85,8 @@ echo [10/11] Minifying public JS, CSS, and HTML assets...
 pushd "%SERVER_SRC%"
 call bun run scripts/minify-public.ts --dir "%RELEASE_DIR%\public"
 if errorlevel 1 goto :err
+call bun run scripts/fingerprint-public-assets.ts --dir "%RELEASE_DIR%\public"
+if errorlevel 1 goto :err
 popd
 
 echo [11/11] Creating runner scripts...

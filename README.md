@@ -69,6 +69,10 @@ native installation or move the server to Linux.
 
 After the first start, open `https://localhost:5173`. Default login is `admin` / `admin` unless you set `OVERLORD_USER` / `OVERLORD_PASS`. First startup writes generated secrets to `data/save.json` (inside the container: `/app/data/save.json`) — keep that file private and back it up.
 
+Agents authenticate only through the `X-Agent-Token` header. Rebuild any
+legacy agent that still places its token in the connection URL; query-string
+agent credentials are rejected.
+
 ---
 
 ### Windows (not recommended)
@@ -405,6 +409,13 @@ Linux / macOS:
 
 Output: `release/prod-package/`
 
+Docker images and both package scripts fingerprint first-party JavaScript and
+CSS filenames with a deterministic build digest, then rewrite HTML and module
+imports to match. Development keeps readable stable paths. This provides safe
+immutable caching and removes version-stable asset URLs, but it is defense in
+depth rather than a substitute for putting the panel behind a VPN, firewall,
+or authenticated reverse proxy.
+
 ---
 
 ## WebRTC Streaming
@@ -427,7 +438,7 @@ go build -tags overlord_webrtc ./cmd/agent
 
 ### Coturn STUN / TURN
 
-Compose starts `overlord-coturn` for ICE traversal in both P2P and MediaMTX Relayed modes. A one-time init service generates a random master secret in the private `overlord-turn-secret` Docker volume. Overlord uses that secret to issue one-hour Coturn REST credentials independently to the authenticated P2P viewer and agent. MediaMTX reads the secret inside Docker and also generates expiring credentials for its WHIP/WHEP clients. No Google STUN server is used, and the master secret is never sent directly to a peer.
+Compose starts `overlord-coturn` for ICE traversal in both P2P and MediaMTX Relayed modes. A one-time init service generates a random master secret and a neutral random TURN realm in the private `overlord-turn-secret` Docker volume. Overlord uses that secret to issue one-hour Coturn REST credentials independently to the authenticated P2P viewer and agent. MediaMTX reads the secret inside Docker and also generates expiring credentials for its WHIP/WHEP clients. No Google STUN server is used, and the master secret is never sent directly to a peer. Set `OVERLORD_TURN_REALM` only when you need an explicit realm; avoid product-identifying values because TURN authentication challenges disclose it.
 
 The defaults work for same-machine testing. For LAN or internet access, set the address that both the browser and agent can reach in a `.env` file next to the compose file:
 
@@ -454,6 +465,10 @@ Compose starts an `overlord-mediamtx` service for Relayed mode. It needs:
 
 - Port `8189/udp` and `8189/tcp` reachable from operators (WebRTC ICE traffic). The Windows / macOS compose publishes these; Linux uses host networking and shares the host's interfaces directly.
 - No auth config — the Overlord server proxies every WHIP/WHEP request through `/api/webrtc/...` and enforces the existing operator JWT + RBAC there.
+
+On Linux host networking, MediaMTX's HTTP signaling listener is explicitly
+bound to `127.0.0.1:8889`; only the authenticated Overlord proxy can reach it.
+The ICE listeners remain externally reachable as required for media transport.
 
 If you only ever want P2P, you can comment out the `mediamtx:` service in your compose file — only Relayed mode depends on it. MediaMTX is configured to use the same Coturn service as a client-only ICE fallback, but it is not itself a STUN/TURN server; Coturn handles all relay allocations.
 

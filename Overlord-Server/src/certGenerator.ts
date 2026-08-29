@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import { existsSync, mkdirSync, unlinkSync } from "fs";
 import { dirname } from "path";
+import { isIP } from "node:net";
 
 interface CertOptions {
   certPath: string;
@@ -10,31 +11,39 @@ interface CertOptions {
   additionalIPs?: string[];
 }
 
-export function certificatesExist(certPath: string, keyPath: string): boolean {
-  return existsSync(certPath) && existsSync(keyPath);
+function safeCertificateName(value: string | undefined): string {
+  const candidate = String(value || "").trim();
+  if (isIP(candidate)) return candidate;
+  if (
+    candidate.length > 0 &&
+    candidate.length <= 253 &&
+    /^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(candidate)
+  ) {
+    return candidate;
+  }
+  return "localhost";
 }
 
-export async function generateSelfSignedCert(
-  options: CertOptions,
-): Promise<void> {
-  const {
-    certPath,
-    keyPath,
-    commonName = "localhost",
-    daysValid = 3650,
-    additionalIPs = [],
-  } = options;
+export function buildSelfSignedOpenSslConfig(
+  commonNameInput = "localhost",
+  additionalIPs: string[] = [],
+): string {
+  const commonName = safeCertificateName(commonNameInput);
+  const dnsNames = isIP(commonName)
+    ? ["localhost"]
+    : Array.from(new Set([commonName, "localhost"]));
+  const ipNames = Array.from(new Set([
+    ...(isIP(commonName) ? [commonName] : []),
+    "127.0.0.1",
+    "::1",
+    ...additionalIPs.filter((ip) => isIP(ip)),
+  ]));
+  const altNames = [
+    ...dnsNames.map((name, index) => `DNS.${index + 1} = ${name}`),
+    ...ipNames.map((ip, index) => `IP.${index + 1} = ${ip}`),
+  ].join("\n");
 
-  const certDir = dirname(certPath);
-  if (!existsSync(certDir)) {
-    mkdirSync(certDir, { recursive: true });
-  }
-
-  console.log("[TLS] Generating self-signed certificate...");
-  console.log(`[TLS] Common Name: ${commonName}`);
-  console.log(`[TLS] Valid for: ${daysValid} days`);
-
-  const sanConfig = `
+  return `
 [req]
 default_bits = 2048
 prompt = no
@@ -44,11 +53,6 @@ req_extensions = req_ext
 x509_extensions = v3_ca
 
 [dn]
-C=US
-ST=State
-L=City
-O=Overlord
-OU=IT
 CN=${commonName}
 
 [req_ext]
@@ -61,13 +65,36 @@ keyUsage = nonRepudiation, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 
 [alt_names]
-DNS.1 = ${commonName}
-DNS.2 = localhost
-DNS.3 = *.local
-IP.1 = 127.0.0.1
-IP.2 = ::1
-${additionalIPs.map((ip, i) => `IP.${i + 3} = ${ip}`).join("\n")}
+${altNames}
 `;
+}
+
+export function certificatesExist(certPath: string, keyPath: string): boolean {
+  return existsSync(certPath) && existsSync(keyPath);
+}
+
+export async function generateSelfSignedCert(
+  options: CertOptions,
+): Promise<void> {
+  const {
+    certPath,
+    keyPath,
+    commonName: commonNameInput = "localhost",
+    daysValid = 825,
+    additionalIPs = [],
+  } = options;
+  const commonName = safeCertificateName(commonNameInput);
+
+  const certDir = dirname(certPath);
+  if (!existsSync(certDir)) {
+    mkdirSync(certDir, { recursive: true });
+  }
+
+  console.log("[TLS] Generating self-signed certificate...");
+  console.log(`[TLS] Common Name: ${commonName}`);
+  console.log(`[TLS] Valid for: ${daysValid} days`);
+
+  const sanConfig = buildSelfSignedOpenSslConfig(commonName, additionalIPs);
 
   const configPath = `${certDir}/openssl.cnf`;
 
