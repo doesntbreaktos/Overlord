@@ -9,7 +9,7 @@ REM Env overrides you can set before running:
 REM   PORT=5173
 REM   HOST=0.0.0.0
 REM   OVERLORD_USER=admin
-REM   OVERLORD_PASS=admin
+REM   OVERLORD_PASS=your-explicit-bootstrap-password
 REM   LOG_LEVEL=info
 REM   NODE_ENV=production
 

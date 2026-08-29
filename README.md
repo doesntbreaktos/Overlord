@@ -131,13 +131,24 @@ cd Overlord
 docker compose -f docker-compose.windows.yml up -d
 ```
 
-**4. Open the panel**
+**4. Get the initial password**
+
+The default username is `admin`. Retrieve the generated one-time password with:
+
+```powershell
+docker compose -f docker-compose.windows.yml exec overlord-server grep bootstrapPassword /app/data/save.json
+```
+
+Use the value shown after `bootstrapPassword`. It is removed from `save.json`
+after you sign in and change it.
+
+**5. Open the panel**
 
 ```text
 https://localhost:5173
 ```
 
-**5. Update later**
+**6. Update later**
 
 ```powershell
 docker compose -f docker-compose.windows.yml down
@@ -145,7 +156,7 @@ docker compose -f docker-compose.windows.yml pull
 docker compose -f docker-compose.windows.yml up -d
 ```
 
-**6. Stop**
+**7. Stop**
 
 ```powershell
 docker compose -f docker-compose.windows.yml down
@@ -235,7 +246,18 @@ and agent (for example, `3.1.0`). The workflow publishes version, major/minor,
 major, and `latest` tags to `ghcr.io/doesntbreaktos/overlord`. Keep the package
 visibility public so Compose can pull it without GitHub authentication.
 
-**4. Open the panel**
+**4. Get the initial password**
+
+The default username is `admin`. Retrieve the generated one-time password with:
+
+```bash
+docker compose exec overlord-server grep bootstrapPassword /app/data/save.json
+```
+
+Use the value shown after `bootstrapPassword`. It is removed from `save.json`
+after you sign in and change it.
+
+**5. Open the panel**
 
 ```text
 https://localhost:5173
@@ -245,7 +267,7 @@ or
 https://IP:5173
 ```
 
-**5. Update later**
+**6. Update later**
 
 From the same folder:
 
@@ -255,7 +277,7 @@ docker compose pull
 docker compose up -d
 ```
 
-**6. Stop**
+**7. Stop**
 
 ```bash
 docker compose down
@@ -305,13 +327,24 @@ macOS uses the same compose file as Windows:
 docker compose -f docker-compose.windows.yml up -d
 ```
 
-**4. Open the panel**
+**4. Get the initial password**
+
+The default username is `admin`. Retrieve the generated one-time password with:
+
+```bash
+docker compose -f docker-compose.windows.yml exec overlord-server grep bootstrapPassword /app/data/save.json
+```
+
+Use the value shown after `bootstrapPassword`. It is removed from `save.json`
+after you sign in and change it.
+
+**5. Open the panel**
 
 ```text
 https://localhost:5173
 ```
 
-**5. Update later**
+**6. Update later**
 
 ```bash
 docker compose -f docker-compose.windows.yml down
@@ -319,7 +352,7 @@ docker compose -f docker-compose.windows.yml pull
 docker compose -f docker-compose.windows.yml up -d
 ```
 
-**6. Stop**
+**7. Stop**
 
 ```bash
 docker compose -f docker-compose.windows.yml down
@@ -357,6 +390,16 @@ Production mode (build + run server executable):
 scripts\start-prod.bat
 ```
 
+After the server starts for the first time, open another PowerShell window and
+retrieve the generated password with:
+
+```powershell
+(Get-Content "$env:APPDATA\Overlord\save.json" | ConvertFrom-Json).auth.bootstrapPassword
+```
+
+Sign in as `admin`. The first login requires a password change, after which the
+bootstrap password is removed from the file.
+
 Build client binaries (adds client builds to the build queue):
 
 ```bat
@@ -389,6 +432,16 @@ Production mode:
 ```bash
 ./scripts/start-prod.sh
 ```
+
+After the server starts for the first time, open another terminal in the
+repository root and retrieve the generated password with:
+
+```bash
+grep bootstrapPassword Overlord-Server/data/save.json
+```
+
+Sign in as `admin` using the displayed value. The first login requires a
+password change, after which the bootstrap password is removed from the file.
 
 ---
 

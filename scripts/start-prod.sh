@@ -37,7 +37,6 @@ echo "[server] starting compiled executable..."
 PORT="${PORT:-5173}" \
 HOST="${HOST:-0.0.0.0}" \
 OVERLORD_USER="${OVERLORD_USER:-admin}" \
-OVERLORD_PASS="${OVERLORD_PASS:-admin}" \
 LOG_LEVEL="${LOG_LEVEL:-info}" \
 NODE_ENV="${NODE_ENV:-production}" \
 OVERLORD_ROOT="$SERVER_DIR" \
