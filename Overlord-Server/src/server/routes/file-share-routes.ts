@@ -28,11 +28,6 @@ const FILE_SHARE_PASSWORD_LIMIT_MAX_KEYS = 10_000;
 const FILE_SHARE_PASSWORD_MAX_CHARS = 1_024;
 const FILE_SHARE_PASSWORD_PRUNE_INTERVAL_MS = 60_000;
 
-function allowLegacyPasswordQuery(): boolean {
-  const setting = String(process.env.OVERLORD_ALLOW_FILE_SHARE_PASSWORD_QUERY || "").trim();
-  return !/^(?:0|false|no|off)$/i.test(setting);
-}
-
 type FileSharePasswordAttempts = {
   attempts: number;
   expiresAt: number;
@@ -181,15 +176,7 @@ export async function handleFileShareRoutes(
     }
 
     if (file.passwordHash) {
-      const headerPassword = req.headers.get("X-Download-Password") || "";
-      const queryPassword = url.searchParams.get("password") || "";
-      if (!headerPassword && queryPassword && !allowLegacyPasswordQuery()) {
-        return Response.json(
-          { error: "Password query parameters are disabled; use X-Download-Password" },
-          { status: 400 },
-        );
-      }
-      const providedPassword = headerPassword || (allowLegacyPasswordQuery() ? queryPassword : "");
+      const providedPassword = req.headers.get("X-Download-Password") || "";
       if (!providedPassword) {
         return Response.json({ error: "Password required" }, { status: 401 });
       }

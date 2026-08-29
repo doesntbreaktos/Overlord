@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"os"
@@ -131,5 +132,38 @@ func TestBuildDialOptions(t *testing.T) {
 	}
 	if opts.HTTPClient == nil || opts.HTTPClient.Transport != transport {
 		t.Fatalf("expected http client to use provided transport")
+	}
+}
+
+func TestRequireEnrollmentChallenge(t *testing.T) {
+	nonce := []byte("signed-enrollment-nonce")
+	got, err := requireEnrollmentChallenge(map[string]interface{}{
+		"type":  "enrollment_challenge",
+		"nonce": base64.StdEncoding.EncodeToString(nonce),
+	})
+	if err != nil {
+		t.Fatalf("requireEnrollmentChallenge failed: %v", err)
+	}
+	if string(got) != string(nonce) {
+		t.Fatalf("nonce = %q, want %q", got, nonce)
+	}
+}
+
+func TestRequireEnrollmentChallengeRejectsLegacyHelloAck(t *testing.T) {
+	_, err := requireEnrollmentChallenge(map[string]interface{}{
+		"type": "hello_ack",
+	})
+	if err == nil || err.Error() != "purgatory: expected enrollment_challenge, got hello_ack" {
+		t.Fatalf("error = %v, want explicit legacy hello_ack rejection", err)
+	}
+}
+
+func TestRequireEnrollmentChallengeRejectsInvalidNonce(t *testing.T) {
+	_, err := requireEnrollmentChallenge(map[string]interface{}{
+		"type":  "enrollment_challenge",
+		"nonce": "not-base64!",
+	})
+	if err == nil {
+		t.Fatal("expected invalid nonce to be rejected")
 	}
 }

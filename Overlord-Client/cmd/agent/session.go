@@ -522,6 +522,26 @@ func truncateStr(s string, n int) string {
 	return s[:n] + "…"
 }
 
+func requireEnrollmentChallenge(envelope map[string]interface{}) ([]byte, error) {
+	msgType, _ := envelope["type"].(string)
+	if msgType != "enrollment_challenge" {
+		if msgType == "" {
+			msgType = "<missing>"
+		}
+		return nil, fmt.Errorf("purgatory: expected enrollment_challenge, got %s", msgType)
+	}
+
+	nonceB64, _ := envelope["nonce"].(string)
+	if nonceB64 == "" {
+		return nil, fmt.Errorf("purgatory: empty nonce in challenge")
+	}
+	nonceBytes, err := base64.StdEncoding.DecodeString(nonceB64)
+	if err != nil {
+		return nil, fmt.Errorf("purgatory: invalid nonce base64: %w", err)
+	}
+	return nonceBytes, nil
+}
+
 func runSession(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, cfg config.Config) (err error) {
 	//garble:controlflow block_splits=10 junk_jumps=10 flatten_passes=2
 	defer func() {
@@ -560,32 +580,14 @@ func runSession(ctx context.Context, cancel context.CancelFunc, conn *websocket.
 
 	safeWriter := wire.NewSafeWriter(conn)
 
-	msgType, _ := challengeEnvelope["type"].(string)
-	var publicKeyB64, signatureB64 string
-
-	switch msgType {
-	case "enrollment_challenge":
-		nonceB64, _ := challengeEnvelope["nonce"].(string)
-		if nonceB64 == "" {
-			return fmt.Errorf("purgatory: empty nonce in challenge")
-		}
-		nonceBytes, decErr := base64.StdEncoding.DecodeString(nonceB64)
-		if decErr != nil {
-			return fmt.Errorf("purgatory: invalid nonce base64: %w", decErr)
-		}
-		sig := identity.Sign(nonceBytes)
-		publicKeyB64 = identity.PublicKeyBase64()
-		signatureB64 = base64.StdEncoding.EncodeToString(sig)
-		log.Printf("[purgatory] signed challenge nonce (%d bytes)", len(nonceBytes))
-
-	case "hello_ack":
-		log.Printf("[purgatory] legacy server (no challenge), proceeding")
-		publicKeyB64 = ""
-		signatureB64 = ""
-
-	default:
-		return fmt.Errorf("purgatory: unexpected first message type: %s", msgType)
+	nonceBytes, err := requireEnrollmentChallenge(challengeEnvelope)
+	if err != nil {
+		return err
 	}
+	sig := identity.Sign(nonceBytes)
+	publicKeyB64 := identity.PublicKeyBase64()
+	signatureB64 := base64.StdEncoding.EncodeToString(sig)
+	log.Printf("[purgatory] signed challenge nonce (%d bytes)", len(nonceBytes))
 
 	env := &rt.Env{Conn: safeWriter, Cfg: cfg, Cancel: cancel, SelectedDisplay: handlers.GetPersistedDisplay()}
 	env.SetLastPong(time.Now().UnixMilli())
@@ -672,43 +674,41 @@ func runSession(ctx context.Context, cancel context.CancelFunc, conn *websocket.
 		return fmt.Errorf("send hello: %w", err)
 	}
 
-	if msgType == "enrollment_challenge" {
-		ackCtx, ackCancel := context.WithTimeout(ctx, 30*time.Second)
-		defer ackCancel()
+	ackCtx, ackCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer ackCancel()
 
-		for {
-			_, ackData, err := conn.Read(ackCtx)
-			if err != nil {
-				return fmt.Errorf("purgatory: failed to read response: %w", err)
-			}
-			ackEnvelope, err := wire.DecodeEnvelope(ackData)
-			if err != nil {
-				return fmt.Errorf("purgatory: failed to decode response: %w", err)
-			}
-
-			ackType, _ := ackEnvelope["type"].(string)
-			switch ackType {
-			case "hello_ack":
-				log.Printf("[purgatory] approved, proceeding with session")
-				if crashReportSent {
-					clearPendingCrashReport()
-					crashReportSent = false
-				}
-
-				if err := handlers.HandleHelloAck(ackCtx, env, ackEnvelope); err != nil {
-					log.Printf("[purgatory] hello_ack handler error: %v", err)
-				}
-			case "enrollment_status":
-				status, _ := ackEnvelope["status"].(string)
-				log.Printf("[purgatory] server returned status=%s", status)
-				return fmt.Errorf("purgatory: status=%s", status)
-			case "ping", "pong":
-				continue
-			default:
-				return fmt.Errorf("purgatory: unexpected response type: %s", ackType)
-			}
-			break
+	for {
+		_, ackData, err := conn.Read(ackCtx)
+		if err != nil {
+			return fmt.Errorf("purgatory: failed to read response: %w", err)
 		}
+		ackEnvelope, err := wire.DecodeEnvelope(ackData)
+		if err != nil {
+			return fmt.Errorf("purgatory: failed to decode response: %w", err)
+		}
+
+		ackType, _ := ackEnvelope["type"].(string)
+		switch ackType {
+		case "hello_ack":
+			log.Printf("[purgatory] approved, proceeding with session")
+			if crashReportSent {
+				clearPendingCrashReport()
+				crashReportSent = false
+			}
+
+			if err := handlers.HandleHelloAck(ackCtx, env, ackEnvelope); err != nil {
+				log.Printf("[purgatory] hello_ack handler error: %v", err)
+			}
+		case "enrollment_status":
+			status, _ := ackEnvelope["status"].(string)
+			log.Printf("[purgatory] server returned status=%s", status)
+			return fmt.Errorf("purgatory: status=%s", status)
+		case "ping", "pong":
+			continue
+		default:
+			return fmt.Errorf("purgatory: unexpected response type: %s", ackType)
+		}
+		break
 	}
 
 	if err := wire.WriteMsg(ctx, env.Conn, wire.Ping{Type: "ping", TS: time.Now().UnixMilli()}); err != nil {

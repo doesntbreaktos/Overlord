@@ -41,7 +41,6 @@ function insertTestFile(options: {
 }
 
 afterEach(() => {
-  delete process.env.OVERLORD_ALLOW_FILE_SHARE_PASSWORD_QUERY;
   while (createdFileIds.length > 0) {
     const id = createdFileIds.pop();
     if (id) deleteSharedFile(id);
@@ -99,29 +98,35 @@ describe("file-share public download security", () => {
     }
   });
 
-  test("supports legacy password query links unless explicitly disabled", async () => {
+  test("ignores password query parameters and requires the download header", async () => {
     const hash = await Bun.password.hash("correct horse battery staple", {
       algorithm: "bcrypt",
       cost: 4,
     });
     const id = insertTestFile({ passwordHash: hash });
     const url = new URL(
-      `https://localhost/api/file-share/${id}/download?password=wrong`,
+      `https://localhost/api/file-share/${id}/download?password=${encodeURIComponent("correct horse battery staple")}`,
     );
     const deps = {
       FILE_SHARE_ROOT: process.env.TEMP || ".",
       requestIP: () => ({ address: "198.51.100.45" }),
     };
 
-    const legacy = await handleFileShareRoutes(new Request(url), url, deps);
-    expect(legacy?.status).toBe(403);
-
-    process.env.OVERLORD_ALLOW_FILE_SHARE_PASSWORD_QUERY = "false";
     const rejected = await handleFileShareRoutes(new Request(url), url, deps);
-    expect(rejected?.status).toBe(400);
+    expect(rejected?.status).toBe(401);
     expect(await rejected?.json()).toEqual({
-      error: "Password query parameters are disabled; use X-Download-Password",
+      error: "Password required",
     });
+
+    const accepted = await handleFileShareRoutes(
+      new Request(url, {
+        headers: { "X-Download-Password": "correct horse battery staple" },
+      }),
+      url,
+      deps,
+    );
+    expect(accepted?.status).toBe(404);
+    expect(await accepted?.json()).toEqual({ error: "File not found on disk" });
   });
 
   test("atomically refuses downloads beyond the configured maximum", () => {

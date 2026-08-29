@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { CORS_HEADERS, SECURITY_HEADERS } from "./http-security";
 
 describe("CORS_HEADERS", () => {
-  test("preserves legacy sandboxed-document GET compatibility without credentials", () => {
-    expect(CORS_HEADERS["Access-Control-Allow-Origin"]).toBe("null");
-    expect(CORS_HEADERS).not.toHaveProperty("Access-Control-Allow-Credentials");
+  test("does not opt API responses into cross-origin browser access", () => {
+    expect(CORS_HEADERS).toEqual({});
+    expect(CORS_HEADERS).not.toHaveProperty("Access-Control-Allow-Origin");
   });
 });
 
