@@ -19,7 +19,7 @@ import (
 	"overlord-client/cmd/agent/internal/overlordenv"
 )
 
-var AgentVersion = "3.2.0"
+var AgentVersion = "3.2.1"
 
 var DefaultPersistence = "false"
 var DefaultServerURL = "wss://127.0.0.1:5173"
