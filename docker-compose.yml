@@ -156,9 +156,44 @@ services:
       #   OVERLORD_WEBRTC_ADDITIONAL_HOSTS=192.168.1.42,stream.example.com
       MTX_WEBRTCADDITIONALHOSTS: ${OVERLORD_WEBRTC_ADDITIONAL_HOSTS:-}
 
+  # Optional private VPN access with Tailscale.
+  #
+  # This joins the host network to your tailnet so Overlord can be reached at
+  # the Tailscale IP on port 5173. It does NOT close the public port by itself:
+  # also bind Overlord to the Tailscale IP or use the host firewall to deny
+  # public access to 5173 while allowing the tailscale0 interface.
+  #
+  # Before enabling:
+  #   1. Create a tagged, preauthorized Tailscale auth key (prefer one-off;
+  #      the persistent state volume avoids needing it again after restarts).
+  #   2. Set TS_AUTHKEY in .env (never commit the key).
+  #   3. Uncomment this service and the tailscale-state volume below.
+  #   4. Apply a tailnet ACL/grant that limits who can reach TCP 5173.
+  #
+  # tailscale:
+  #   image: tailscale/tailscale:stable
+  #   container_name: overlord-tailscale
+  #   hostname: ${TS_HOSTNAME:-overlord-server}
+  #   network_mode: host
+  #   environment:
+  #     TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY before enabling Tailscale}
+  #     TS_STATE_DIR: /var/lib/tailscale
+  #     TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:---accept-dns=false --advertise-tags=tag:overlord}
+  #   volumes:
+  #     - tailscale-state:/var/lib/tailscale
+  #   devices:
+  #     - /dev/net/tun:/dev/net/tun
+  #   cap_add:
+  #     - NET_ADMIN
+  #     - SYS_MODULE
+  #   restart: unless-stopped
+  #   security_opt:
+  #     - no-new-privileges:true
+
 volumes:
   overlord-data:
   overlord-certs:
   overlord-client-build-cache:
   overlord-plugins:
   overlord-turn-secret:
+  # tailscale-state:

@@ -646,11 +646,12 @@ allow both TCP and UDP on that port. HTTP/1.1 remains enabled for initial
 upgrades. When `OVERLORD_TLS_OFFLOAD=true`, the reverse proxy owns public
 HTTP/3 support because Bun's internal listener has no TLS.
 
-To verify both advertisement and an actual QUIC transfer with an HTTP/3-capable
-curl build:
+The unauthenticated `/health` endpoint accepts only loopback clients. To verify
+both advertisement and an actual QUIC transfer, run the check on the Overlord
+host with an HTTP/3-capable curl build:
 
 ```powershell
-.\scripts\test-http3.ps1 https://YOUR_OVERLORD_HOST:5173/health
+.\scripts\test-http3.ps1 https://127.0.0.1:5173/health -AllowUntrustedCertificate
 ```
 
 For a self-signed certificate, add `-AllowUntrustedCertificate`.
@@ -658,7 +659,7 @@ For a self-signed certificate, add `-AllowUntrustedCertificate`.
 To compare cold HTTP/1.1 and HTTP/3 request timings:
 
 ```powershell
-.\scripts\benchmark-http3.ps1 https://YOUR_OVERLORD_HOST:5173/health -Requests 30
+.\scripts\benchmark-http3.ps1 https://127.0.0.1:5173/health -Requests 30 -AllowUntrustedCertificate
 ```
 
 The benchmark selects an HTTP/3-capable curl automatically, validates the

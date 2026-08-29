@@ -50,7 +50,7 @@ function isValidIp(ip: string): boolean {
   return isIPv4(ip) || isIPv6(ip);
 }
 
-function isLoopbackIp(ip: string): boolean {
+export function isLoopbackIp(ip: string): boolean {
   if (isIPv4(ip)) return Number(ip.split(".")[0]) === 127;
   if (!isIPv6(ip)) return false;
   const lower = ip.toLowerCase();

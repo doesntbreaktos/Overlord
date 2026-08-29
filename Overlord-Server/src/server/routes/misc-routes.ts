@@ -19,6 +19,7 @@ import { requirePermission } from "../../rbac";
 import { getUserTelegramChatId, setUserTelegramChatId, getUserClientAccessScope, listUserClientRuleIdsByAccess, canUserAccessClient, canUserAccessFeature, getUserById, getUserInputArchiveEnabled, setUserInputArchiveEnabled, type FeatureName } from "../../users";
 import { buildClientGraph } from "../client-graph";
 import { runCertbotSetup } from "../certbot-setup";
+import { isLoopbackIp } from "../client-ip";
 import {
   getActiveProxies,
   startProxy,
@@ -518,15 +519,24 @@ export async function handleMiscRoutes(
     return Response.json(graph, { headers: deps.CORS_HEADERS });
   }
 
-  if (url.pathname === "/health") {
-    return new Response("ok", { headers: deps.CORS_HEADERS });
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/health") {
+    const requestIp = deps.requestIP?.(req)?.address || "";
+    if (!isLoopbackIp(requestIp)) {
+      return new Response("Not found", { status: 404 });
+    }
+    return new Response(req.method === "HEAD" ? null : "ok", {
+      headers: { ...deps.CORS_HEADERS, "Cache-Control": "no-store" },
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/api/version") {
+    const user = await authenticateRequest(req);
+    if (!user) return new Response("Unauthorized", { status: 401 });
     return new Response(JSON.stringify({ version: deps.SERVER_VERSION }), {
       headers: {
         ...deps.CORS_HEADERS,
         "Content-Type": "application/json",
+        "Cache-Control": "no-store",
       },
     });
   }
