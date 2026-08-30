@@ -179,6 +179,9 @@ let securityConfig = null;
 let tlsConfig = null;
 let oidcConfig = null;
 
+let pendingSettingsForm = null;
+let pendingSettingsFormAt = 0;
+
 function showMessage(text, type = "ok") {
   if (!messageEl) return;
   messageEl.textContent = text;
@@ -193,6 +196,7 @@ function showMessage(text, type = "ok") {
   );
 
   if (type === "error") {
+    pendingSettingsForm = null;
     messageEl.classList.add("text-rose-200", "border-rose-700", "bg-rose-900/30");
   } else {
     messageEl.classList.add("text-emerald-200", "border-emerald-700", "bg-emerald-900/30");
@@ -207,6 +211,10 @@ function formatDate(timestamp) {
 function showSettingsSuccess(text, showInline = showMessage) {
   showInline(text);
   window.showToast?.(text, "success");
+  if (pendingSettingsForm && Date.now() - pendingSettingsFormAt < 30000) {
+    clearSettingsDirty(pendingSettingsForm);
+  }
+  pendingSettingsForm = null;
 }
 
 function canManageClientBans(role) {
@@ -227,16 +235,7 @@ function requireUiPermission(perm, message = "You do not have permission for thi
   return false;
 }
 
-function applyPermissionVisibility() {
-  document.querySelectorAll("[data-permission]").forEach((el) => {
-    const perm = el.dataset.permission;
-    if (perm && userHas(perm)) {
-      el.classList.remove("hidden");
-    } else {
-      el.classList.add("hidden");
-    }
-  });
-
+function updateSettingsNavGroupVisibility() {
   const sidebar = document.getElementById("settings-sidebar");
   if (!sidebar) return;
   const children = Array.from(sidebar.children);
@@ -247,13 +246,146 @@ function applyPermissionVisibility() {
     for (let j = i + 1; j < children.length; j++) {
       const next = children[j];
       if (next.classList.contains("settings-nav-group-label")) break;
-      if (next.classList.contains("settings-nav-link") && !next.classList.contains("hidden")) {
+      if (next.classList.contains("settings-nav-link")
+        && !next.classList.contains("hidden")
+        && !next.classList.contains("settings-search-hidden")) {
         hasVisibleLink = true;
         break;
       }
     }
     label.classList.toggle("hidden", !hasVisibleLink);
   }
+}
+
+function applyPermissionVisibility() {
+  document.querySelectorAll("[data-permission]").forEach((el) => {
+    const perm = el.dataset.permission;
+    if (perm && userHas(perm)) {
+      el.classList.remove("hidden");
+    } else {
+      el.classList.add("hidden");
+    }
+  });
+
+  updateSettingsNavGroupVisibility();
+}
+
+function initSettingsSearch() {
+  const input = document.getElementById("settings-search");
+  const clearBtn = document.getElementById("settings-search-clear");
+  const status = document.getElementById("settings-search-status");
+  const empty = document.getElementById("settings-search-empty");
+  const sidebar = document.getElementById("settings-sidebar");
+  if (!input || !sidebar) return;
+
+  const links = Array.from(sidebar.querySelectorAll(".settings-nav-link"));
+  const linkByTarget = new Map(links.map((link) => [link.dataset.target, link]));
+  const sections = Array.from(document.querySelectorAll(".settings-section"));
+  const searchText = new Map(sections.map((section) => {
+    const link = linkByTarget.get(section.id);
+    return [section, `${link?.textContent || ""} ${section.textContent || ""}`.toLocaleLowerCase()];
+  }));
+
+  function applySearch() {
+    const query = input.value.trim().toLocaleLowerCase();
+    let matchCount = 0;
+
+    for (const section of sections) {
+      const matches = !query || searchText.get(section).includes(query);
+      section.classList.toggle("settings-search-hidden", !matches);
+      const link = linkByTarget.get(section.id);
+      if (link) link.classList.toggle("settings-search-hidden", !matches);
+      if (query && matches && !section.classList.contains("hidden")) matchCount += 1;
+    }
+
+    clearBtn?.classList.toggle("hidden", !query);
+    empty?.classList.toggle("settings-search-hidden", !query || matchCount > 0);
+    if (status) {
+      status.textContent = query
+        ? `${matchCount} available section${matchCount === 1 ? "" : "s"} match “${input.value.trim()}”.`
+        : "Search every available settings section.";
+    }
+    updateSettingsNavGroupVisibility();
+  }
+
+  input.addEventListener("input", applySearch);
+  clearBtn?.addEventListener("click", () => {
+    input.value = "";
+    applySearch();
+    input.focus();
+  });
+  document.addEventListener("keydown", (event) => {
+    const tag = document.activeElement?.tagName?.toLowerCase();
+    const isTyping = tag === "input" || tag === "textarea" || tag === "select" || document.activeElement?.isContentEditable;
+    if (event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey && !isTyping) {
+      event.preventDefault();
+      input.focus();
+    }
+    if (event.key === "Escape" && document.activeElement === input && input.value) {
+      input.value = "";
+      applySearch();
+    }
+  });
+}
+
+const dirtySettingsForms = new Set();
+
+function renderSettingsDirtyState() {
+  const bar = document.getElementById("settings-unsaved-bar");
+  const count = document.getElementById("settings-unsaved-count");
+  const dirtyCount = dirtySettingsForms.size;
+  if (bar) {
+    bar.classList.toggle("hidden", dirtyCount === 0);
+    bar.classList.toggle("flex", dirtyCount > 0);
+  }
+  if (count) {
+    count.textContent = dirtyCount === 1
+      ? "1 settings section has edits that have not been saved."
+      : `${dirtyCount} settings sections have edits that have not been saved.`;
+  }
+}
+
+function clearSettingsDirty(form) {
+  if (!form) return;
+  dirtySettingsForms.delete(form);
+  if (pendingSettingsForm === form) pendingSettingsForm = null;
+  form.closest(".settings-section")?.removeAttribute("data-settings-dirty");
+  renderSettingsDirtyState();
+}
+
+function initSettingsDirtyTracking() {
+  const markDirty = (target) => {
+    const form = target?.closest?.(".settings-section form");
+    if (!form || target.type === "submit" || target.type === "button") return;
+    dirtySettingsForms.add(form);
+    form.closest(".settings-section")?.setAttribute("data-settings-dirty", "true");
+    renderSettingsDirtyState();
+  };
+
+  document.addEventListener("input", (event) => markDirty(event.target), true);
+  document.addEventListener("change", (event) => markDirty(event.target), true);
+  document.addEventListener("submit", (event) => {
+    if (!dirtySettingsForms.has(event.target)) return;
+    pendingSettingsForm = event.target;
+    pendingSettingsFormAt = Date.now();
+  }, true);
+
+  document.getElementById("settings-review-edits")?.addEventListener("click", () => {
+    const first = dirtySettingsForms.values().next().value;
+    const section = first?.closest(".settings-section");
+    section?.scrollIntoView({ behavior: "smooth", block: "start" });
+    first?.querySelector("input:not([type=hidden]), select, textarea")?.focus({ preventScroll: true });
+  });
+  let allowDiscardReload = false;
+  document.getElementById("settings-discard-edits")?.addEventListener("click", () => {
+    allowDiscardReload = true;
+    window.location.reload();
+  });
+  window.addEventListener("beforeunload", (event) => {
+    if (dirtySettingsForms.size === 0 || allowDiscardReload) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
 }
 
 async function renderPermissionsOverview() {
@@ -1433,6 +1565,7 @@ function initSettingsSidebar() {
     const id = link.dataset.target;
     const section = id ? document.getElementById(id) : null;
     if (section) {
+      link.setAttribute("href", `#${id}`);
       sectionMap.set(section, link);
       sectionsInOrder.push(section);
     }
@@ -1443,9 +1576,13 @@ function initSettingsSidebar() {
   function setActive(link) {
     if (link === activeLink) return;
     activeLink = link;
-    links.forEach((l) => l.classList.remove("active"));
+    links.forEach((l) => {
+      l.classList.remove("active");
+      l.removeAttribute("aria-current");
+    });
     if (link) {
       link.classList.add("active");
+      link.setAttribute("aria-current", "location");
       animateElement(link, [
         { transform: "translateX(-2px)", opacity: 0.8 },
         { transform: "translateX(0)", opacity: 1 },
@@ -1476,6 +1613,36 @@ function initSettingsSidebar() {
     emphasizeElement(target, "rgba(56, 189, 248, 0.18)");
     target.scrollIntoView({ behavior: "smooth", block: "start" });
     history.replaceState(null, "", `#${id}`);
+    if (window.matchMedia("(max-width: 1023px)").matches) {
+      sidebar.classList.remove("mobile-open");
+      const toggle = document.getElementById("settings-nav-toggle");
+      toggle?.setAttribute("aria-expanded", "false");
+      toggle?.querySelector("[data-toggle-icon]")?.classList.remove("rotate-180");
+    }
+  });
+
+  const mobileToggle = document.getElementById("settings-nav-toggle");
+  mobileToggle?.addEventListener("click", () => {
+    const isOpen = sidebar.classList.toggle("mobile-open");
+    mobileToggle.setAttribute("aria-expanded", String(isOpen));
+    mobileToggle.querySelector("[data-toggle-icon]")?.classList.toggle("rotate-180", isOpen);
+  });
+
+  window.addEventListener("hashchange", () => {
+    const id = window.location.hash.slice(1);
+    const target = document.getElementById(id);
+    const link = target ? sectionMap.get(target) : null;
+    if (!target || !link || target.classList.contains("hidden")) return;
+    if (target.classList.contains("settings-search-hidden")) {
+      const searchInput = document.getElementById("settings-search");
+      if (searchInput) {
+        searchInput.value = "";
+        searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
+    updateSettingsScrollOffset();
+    setActive(link);
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
   // Active-section highlight via IntersectionObserver + page-bottom override.
@@ -2556,6 +2723,7 @@ async function saveFileTransferLimits(event) {
     }
     await loadFileTransferLimits();
     showFileTransferLimitsMsg("File transfer limits saved and active.", "success");
+    clearSettingsDirty(document.getElementById("file-transfer-limits-form"));
   } catch {
     showFileTransferLimitsMsg("Network error.", "error");
   }
@@ -3105,6 +3273,8 @@ async function init() {
     if (buildsTableBody) buildsTableBody.addEventListener("click", handleBuildBlockClick);
     if (buildsShowAllInput) buildsShowAllInput.addEventListener("change", loadBuilds);
 
+    initSettingsSearch();
+    initSettingsDirtyTracking();
     initSettingsSidebar();
 
     // Compute the scroll offset now, then again after the nav has had a moment
@@ -3234,6 +3404,7 @@ async function saveBackstageDllSettings(e) {
       return;
     }
     showBackstageDllMsg("Backstage DLL settings saved.", "success");
+    clearSettingsDirty(document.getElementById("backstage-dll-form"));
     renderBackstageDllStatus(data.status || {});
   } catch (err) {
     console.error("Failed to save backstage DLL settings", err);

@@ -62,9 +62,61 @@
          class applies scroll-margin-top, which both `scrollIntoView` and
          browser hash navigation honor. */
       :root { --settings-scroll-mt: 1rem; }
+      .settings-search-hidden { display: none !important; }
+      .settings-hero {
+        position: relative;
+        overflow: hidden;
+        isolation: isolate;
+        background:
+          radial-gradient(circle at 86% 10%, rgb(56 189 248 / 0.13), transparent 34%),
+          linear-gradient(135deg, rgb(15 23 42 / 0.96), rgb(15 23 42 / 0.72));
+      }
+      .settings-hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -4rem -6rem auto;
+        z-index: -1;
+        width: 15rem;
+        height: 15rem;
+        border-radius: 999px;
+        background: rgb(14 165 233 / 0.08);
+        filter: blur(12px);
+      }
+      .settings-search-wrap:focus-within {
+        border-color: rgb(56 189 248 / 0.7);
+        box-shadow: 0 0 0 3px rgb(56 189 248 / 0.1);
+      }
       .settings-section {
         scroll-margin-top: var(--settings-scroll-mt);
+        position: relative;
+        overflow: hidden;
+        box-shadow: 0 18px 45px -36px rgb(0 0 0 / 0.9);
         transition: border-color var(--motion-normal) ease, box-shadow var(--motion-normal) ease;
+      }
+      .settings-section::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 2px;
+        background: linear-gradient(to bottom, rgb(56 189 248 / 0.7), transparent 10rem);
+        opacity: 0;
+        transition: opacity var(--motion-normal) ease;
+      }
+      .settings-section:hover { border-color: rgb(51 65 85); }
+      .settings-section[data-settings-dirty="true"] {
+        border-color: rgb(245 158 11 / 0.65);
+        box-shadow: 0 0 0 1px rgb(245 158 11 / 0.08), 0 18px 45px -36px rgb(245 158 11 / 0.65);
+      }
+      .settings-section:hover::before,
+      .settings-section:focus-within::before { opacity: 1; }
+      #section-bans,
+      #wipe-offline-section {
+        border-color: rgb(127 29 29 / 0.7);
+        background: linear-gradient(145deg, rgb(69 10 10 / 0.18), rgb(15 23 42 / 0.72));
+      }
+      #section-bans::before,
+      #wipe-offline-section::before {
+        background: linear-gradient(to bottom, rgb(248 113 113 / 0.85), transparent 10rem);
       }
       /* Also pin the sticky sidebar below the topbar so it doesn't slide
          under the nav when the page is scrolled. */
@@ -84,9 +136,15 @@
       }
       @media (max-width: 1023px) {
         #settings-sidebar {
+          display: none;
           max-height: none;
           overflow: visible;
         }
+        #settings-sidebar.mobile-open { display: block; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .settings-nav-link,
+        .settings-section { transition: none; }
       }
     </style>
   </head>
@@ -94,19 +152,47 @@
     <header id="top-nav"></header>
 
     <main class="max-w-7xl w-full mx-auto px-4 py-8">
-      <div class="mb-6">
-        <h1 class="text-2xl font-bold text-slate-100">Settings</h1>
-        <p class="text-slate-400 text-sm">
-          Manage your account preferences, operational tools, and admin configuration.
-        </p>
+      <div class="settings-hero mb-6 rounded-2xl border border-slate-800 px-5 py-6 sm:px-7 sm:py-7">
+        <div class="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div class="max-w-2xl">
+            <div class="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-sky-400">
+              <i class="fa-solid fa-sliders"></i>
+              Control center
+            </div>
+            <h1 class="text-2xl font-bold text-slate-100 sm:text-3xl">Settings</h1>
+            <p class="mt-2 text-sm leading-6 text-slate-400">
+              Manage your account, operational tools, security, and server configuration in one place.
+            </p>
+          </div>
+          <div class="w-full xl:max-w-xl">
+            <label for="settings-search" class="mb-2 block text-xs font-medium text-slate-300">Find a setting</label>
+            <div class="settings-search-wrap flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-950/80 px-4 py-3 transition">
+              <i class="fa-solid fa-magnifying-glass text-slate-500" aria-hidden="true"></i>
+              <input id="settings-search" type="search" autocomplete="off"
+                class="min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+                placeholder="Search passwords, TLS, notifications, branding..." />
+              <button id="settings-search-clear" type="button" class="hidden text-slate-500 hover:text-slate-200" aria-label="Clear settings search">
+                <i class="fa-solid fa-xmark"></i>
+              </button>
+              <kbd class="hidden rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] text-slate-500 sm:inline">/</kbd>
+            </div>
+            <p id="settings-search-status" class="mt-2 min-h-5 text-xs text-slate-500" aria-live="polite">Search every available settings section.</p>
+          </div>
+        </div>
       </div>
 
       <div class="flex flex-col lg:flex-row gap-6">
 
         <!-- Sidebar nav -->
-        <aside class="lg:w-56 lg:flex-shrink-0">
+        <aside class="lg:w-64 lg:flex-shrink-0">
+          <button id="settings-nav-toggle" type="button"
+            class="mb-3 flex w-full items-center justify-between rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm font-medium text-slate-200 lg:hidden"
+            aria-expanded="false" aria-controls="settings-sidebar">
+            <span class="flex items-center gap-2"><i class="fa-solid fa-list-ul text-sky-400"></i> Browse sections</span>
+            <i class="fa-solid fa-chevron-down text-xs text-slate-500 transition-transform" data-toggle-icon></i>
+          </button>
           <nav id="settings-sidebar"
-            class="lg:sticky bg-slate-900/60 border border-slate-800 rounded-xl p-2 space-y-0.5 text-sm">
+            class="lg:sticky bg-slate-900/70 border border-slate-800 rounded-xl p-2 space-y-0.5 text-sm shadow-xl shadow-black/10" aria-label="Settings sections">
 
             <span class="settings-nav-group-label">Personal</span>
             <a data-target="section-account"          class="settings-nav-link" style="--accent: 56 189 248"><i class="fa-solid fa-user w-4 text-sky-400"></i><span>Account</span></a>
@@ -141,6 +227,14 @@
 
         <!-- Sections -->
         <div class="flex-1 min-w-0 space-y-6">
+
+      <div id="settings-search-empty" class="settings-search-hidden rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-6 py-12 text-center">
+        <div class="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-slate-800 text-slate-400">
+          <i class="fa-solid fa-magnifying-glass"></i>
+        </div>
+        <h2 class="font-semibold text-slate-200">No matching settings</h2>
+        <p class="mt-1 text-sm text-slate-500">Try a broader term or clear the search.</p>
+      </div>
 
       <!-- ========== PERSONAL ========== -->
 
@@ -1875,6 +1969,18 @@
       <footer class="text-center text-sm text-slate-500 py-4 border-t border-slate-800 mt-4">
         <p>Created by KDot &mdash; <a href="https://t.me/Onimai" target="_blank" rel="noopener noreferrer" class="text-sky-400 hover:text-sky-300 transition-colors"><i class="fa-brands fa-telegram"></i> t.me/Onimai</a></p>
       </footer>
+
+      <div id="settings-unsaved-bar" class="hidden fixed inset-x-4 bottom-4 z-50 mx-auto max-w-xl flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-slate-900/95 px-4 py-3 shadow-2xl shadow-black/50 backdrop-blur sm:px-5">
+        <div class="flex min-w-0 flex-1 items-center gap-3">
+          <div class="flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-amber-500/10 text-amber-300"><i class="fa-solid fa-pen"></i></div>
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-slate-100">You have unsaved edits</p>
+            <p id="settings-unsaved-count" class="text-xs text-slate-400">Review the highlighted section before leaving.</p>
+          </div>
+        </div>
+        <button id="settings-review-edits" type="button" class="rounded-lg px-3 py-2 text-xs font-medium text-sky-300 hover:bg-sky-500/10">Review</button>
+        <button id="settings-discard-edits" type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800">Discard</button>
+      </div>
 
     </main>
 
